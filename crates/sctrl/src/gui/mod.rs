@@ -9,8 +9,8 @@ mod mirror;
 mod skin;
 mod txwin;
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock, OnceLock};
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, RichText, Sense, Stroke, Vec2, ViewportCommand, X11WindowType};
@@ -43,8 +43,31 @@ const BANDS: [(&str, u32); 10] = [
     ("10m", 28_074_000),
 ];
 
+/// The window's icon (the menu entry's, as a PNG), decoded once.
+pub static ICON: LazyLock<Option<Arc<egui::IconData>>> = LazyLock::new(|| {
+    eframe::icon_data::from_png_bytes(include_bytes!("../../../../packaging/sctrl.png"))
+        .ok()
+        .map(Arc::new)
+});
+
+/// The running window's context, for `sctrl show` from another process.
+static WINDOW: OnceLock<egui::Context> = OnceLock::new();
+static SHOW: AtomicBool = AtomicBool::new(false);
+
+/// Bring the window forward, unshaded; false in a daemon (no window).
+pub fn show() -> bool {
+    let Some(ctx) = WINDOW.get() else { return false };
+    SHOW.store(true, Ordering::Relaxed);
+    ctx.request_repaint();
+    true
+}
+
 pub fn run(serial: Option<String>, rt: tokio::runtime::Runtime) -> i32 {
     if rt.block_on(ipc::running()) {
+        // Launched again (rofi, a menu): the running window comes forward.
+        if rt.block_on(ipc::forward(vec!["show".into()], env!("SCTRL_BUILD_ID"))) == Some(0) {
+            return 0;
+        }
         eprintln!("sctrl: an S-CTRL is already running (window or daemon); use it, or stop it first");
         return 2;
     }
@@ -64,6 +87,9 @@ pub fn run(serial: Option<String>, rt: tokio::runtime::Runtime) -> i32 {
         .with_window_type(X11WindowType::Utility)
         .with_resizable(false)
         .with_inner_size(window_size(gui.scale.clamp(1.0, 3.0), false));
+    if let Some(icon) = ICON.clone() {
+        viewport = viewport.with_icon(icon);
+    }
     if gui.always_on_top {
         viewport = viewport.with_always_on_top();
     }
@@ -128,11 +154,14 @@ pub struct App {
     /// streams it only while it is drawn.
     painted: Arc<AtomicU64>,
     epoch: Instant,
+    /// The DIAG button's switch is under way (until the radio is back).
+    leaving_diag: Arc<AtomicBool>,
 }
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>, svc: Service, rt: tokio::runtime::Handle) -> Self {
         skin::apply(&cc.egui_ctx);
+        let _ = WINDOW.set(cc.egui_ctx.clone());
         let (act, toasts_rx) = Actions::new(svc.clone(), rt.clone(), cc.egui_ctx.clone());
         let dirty = Arc::new(AtomicU32::new(ALL_PAGES));
         // Pump: what the radio pushes marks pages dirty and wakes the window.
@@ -224,6 +253,7 @@ impl App {
             wm_drag: false,
             painted,
             epoch,
+            leaving_diag: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -239,6 +269,26 @@ impl App {
         self.act.run(Action::PanelInput, self.took_control, async move {
             l.input(code, value).await?;
             Ok(None)
+        });
+    }
+
+    fn leave_diag(&self, serial: String) {
+        /// Clears the flag however the job ends (done, failed, timed out).
+        struct Busy(Arc<AtomicBool>);
+        impl Drop for Busy {
+            fn drop(&mut self) {
+                self.0.store(false, Ordering::Relaxed);
+            }
+        }
+        let leaving = self.leaving_diag.clone();
+        self.act.run(Action::Personality, self.took_control, async move {
+            leaving.store(true, Ordering::Relaxed);
+            let _busy = Busy(leaving);
+            let dev = tokio::task::spawn_blocking(move || sctrl_core::device::find_spartacus(Some(&serial)))
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("the radio went away"))?;
+            sctrl_core::console::leave_diag(&dev).await?;
+            Ok(Some("sound card + LINK ports up".into()))
         });
     }
 
@@ -432,13 +482,35 @@ impl App {
         let resp = ui.add(egui::Image::new((tex.id(), size)).sense(Sense::click_and_drag()));
         let linked = self.act.svc.link().is_some();
         if !linked {
+            let state = self.act.svc.state();
             ui.painter().text(
                 resp.rect.center(),
                 egui::Align2::CENTER_CENTER,
-                self.act.svc.state().summary(),
+                state.summary(),
                 egui::FontId::monospace(14.0),
                 skin::WARN,
             );
+            // Leaving DIAG is the user's call: a button, never automatic.
+            if let ConnState::Diag { serial } = state {
+                let at =
+                    egui::Rect::from_center_size(resp.rect.center() + Vec2::new(0.0, 34.0), Vec2::new(240.0, 28.0));
+                let idle = !self.leaving_diag.load(Ordering::Relaxed);
+                let label = if idle {
+                    "switch to sound card + LINK"
+                } else {
+                    "switching ..."
+                };
+                if ui
+                    .put(
+                        at,
+                        egui::Button::new(label).sense(if idle { Sense::click() } else { Sense::hover() }),
+                    )
+                    .on_hover_text("leave the DIAG console (as `sctrl usb audio`)")
+                    .clicked()
+                {
+                    self.leave_diag(serial);
+                }
+            }
             return;
         }
         // The knob: wheel notches over the screen (Shift: shaft pressed, Ctrl: FUNC held).
@@ -806,6 +878,15 @@ impl eframe::App for App {
                 pressed: false,
                 modifiers: egui::Modifiers::default(),
             });
+        }
+    }
+
+    /// Runs hidden too (another workspace), so `sctrl show` reaches it.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if SHOW.swap(false, Ordering::Relaxed) {
+            self.toggle_shade = self.shade;
+            ctx.send_viewport_cmd(ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(ViewportCommand::Focus);
         }
     }
 

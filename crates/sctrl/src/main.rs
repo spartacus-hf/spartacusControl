@@ -80,6 +80,13 @@ pub fn ipc_handler(
                     return 2;
                 }
             };
+            if matches!(cli.cmd, Some(Cmd::Show)) {
+                if gui::show() {
+                    return 0;
+                }
+                let _ = sink.send("sctrl: the running S-CTRL is a daemon, without a window".into());
+                return 3;
+            }
             if matches!(cli.cmd, Some(Cmd::Daemon) | Some(Cmd::Gui) | None) {
                 let _ = sink.send("sctrl: an S-CTRL is already running".into());
                 return 2;

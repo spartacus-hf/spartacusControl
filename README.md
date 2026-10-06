@@ -24,8 +24,8 @@ radios on ST's USB ID (QRP Labs QMX, QMX+, QDX ...) are listed and never touched
 ## Requirements
 
 - The radio on alt2 firmware with the LINK (v8.11 or later) and its USB personality on
-  audio (`sctrl usb audio` switches it from the DIAG console). Without the LINK, the CLI
-  falls back to the console.
+  audio. A radio in DIAG (the console) stays there until you say: the window offers a
+  button, or `sctrl usb audio`. Without the LINK, the CLI falls back to the console.
 - Linux with PipeWire. S-CTRL runs PipeWire's own tools (`pw-dump`, `pw-loopback`,
   `wpctl`), which come with it, and `systemd-inhibit` where present (the PC stays awake
   while TX is armed).
@@ -41,6 +41,11 @@ cargo build --release
 ./target/release/sctrl          # the window
 ./target/release/sctrl --help   # the CLI
 ```
+
+To have it in rofi (`-show drun`) and application menus, `scripts/install.sh` builds the
+release and installs it for your user only: `~/.local/bin/sctrl`, a desktop entry in
+`~/.local/share/applications` and its icon. `scripts/install.sh --uninstall` removes them.
+Launching it again while it runs brings the window forward, unshaded (`sctrl show`).
 
 Settings live in `~/.config/sctrl/config.json` (PC speaker, TX limits, window, CW memories);
 the TX audit log in `~/.local/state/sctrl/tx.log`.
@@ -144,4 +149,6 @@ transmitter's audio input.
 | `crates/sctrl` | The `sctrl` binary: the window (no arguments), `sctrl daemon`, CLI commands. |
 | `docs/link-protocol.md` | The USB LINK protocol, identical to `alt2/docs/SCTRL_LINK.md`. |
 | `scripts/check.sh` | fmt, clippy and tests: run before committing. |
+| `scripts/install.sh` | The release for this user: binary, desktop entry, icon (`--uninstall`). |
+| `packaging` | The desktop entry and the icon (SVG; the PNG is the window's own). |
 | `tests/fixtures` | LINK test vectors shared with the firmware. |

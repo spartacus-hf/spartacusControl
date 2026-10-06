@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=S-CTRL
+GenericName=SPARTACUS radio control
+Comment=The SPARTACUS REV1 on this PC: its live screen, panel, PC speaker and TX, over USB
+Exec=@BIN@
+TryExec=@BIN@
+Icon=sctrl
+Terminal=false
+Categories=AudioVideo;Audio;HamRadio;
+Keywords=sctrl;spartacus;chireix;radio;transceiver;rig;cw;ft8;
+StartupNotify=false
+StartupWMClass=sctrl

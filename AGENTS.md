@@ -10,7 +10,8 @@ per line on stdout.
   and `watch` need this.
 - Without one, the command opens the radio's LINK port itself and closes it when done.
 - The running S-CTRL and `sctrl` must be the same build: after a rebuild, restart the
-  window, or the command is refused with "another build ... restart it".
+  window, or the command is refused with "another build ... restart it". A window started
+  from the menu is the installed `~/.local/bin/sctrl` (`scripts/install.sh`): use that one.
 - `--serial <SERIAL>` picks one of several radios; `--timeout <s>` (default 10).
 
 ## Results

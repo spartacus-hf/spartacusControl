@@ -463,9 +463,13 @@ impl Companions {
 }
 
 fn builder(title: &str, size: [f32; 2]) -> ViewportBuilder {
-    ViewportBuilder::default()
+    let b = ViewportBuilder::default()
         .with_title(title)
         .with_app_id("sctrl")
         .with_window_type(X11WindowType::Utility)
-        .with_inner_size(size)
+        .with_inner_size(size);
+    match super::ICON.clone() {
+        Some(icon) => b.with_icon(icon),
+        None => b,
+    }
 }

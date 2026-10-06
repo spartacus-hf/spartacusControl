@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
 
+use crate::device::{self, Personality, UsbDevice};
 use crate::tty::Tty;
 
 pub struct TextConsole {
@@ -75,4 +76,37 @@ pub fn fields(lines: &[String]) -> Vec<(String, String)> {
         .flat_map(|l| l.split_whitespace())
         .filter_map(|t| t.split_once('=').map(|(k, v)| (k.to_string(), v.to_string())))
         .collect()
+}
+
+/// Leave the DIAG personality for the sound card + CAT/LINK ports (the
+/// console's `exit`) and wait for them. Only when asked (`sctrl usb audio`,
+/// the window's button): a console nobody else holds, a radio receiving.
+pub async fn leave_diag(dev: &UsbDevice) -> Result<()> {
+    let Some(port) = dev.link_port().filter(|_| dev.personality() == Some(Personality::Diag)) else {
+        bail!("the radio is not in its DIAG personality");
+    };
+    if let Some(who) = crate::session::port_holders_text(&port) {
+        bail!("{} is held by {who}", port.display());
+    }
+    let mut c = TextConsole::open(&port).await?;
+    let id = c.cmd("id", Duration::from_secs(3)).await?;
+    let state = id.iter().find_map(|l| l.strip_prefix("state=")).unwrap_or("unknown");
+    if !matches!(state, "RECEIVE" | "PROTECTION") {
+        bail!("the radio is in {state}; wait for receive");
+    }
+    let _ = c.cmd("exit", Duration::from_secs(1)).await; // the port goes away with the reply
+    drop(c);
+    let end = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < end {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let serial = dev.serial.clone();
+        let back = tokio::task::spawn_blocking(move || device::find_spartacus(Some(&serial)))
+            .await
+            .ok()
+            .flatten();
+        if back.is_some_and(|d| d.personality() == Some(Personality::Audio) && d.link_port().is_some()) {
+            return Ok(());
+        }
+    }
+    bail!("the radio did not come back as a sound card within 10 s")
 }

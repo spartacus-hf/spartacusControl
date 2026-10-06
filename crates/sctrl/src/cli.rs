@@ -53,6 +53,8 @@ pub enum Cmd {
     Gui,
     /// Hold the radio and serve `sctrl` commands, without a window.
     Daemon,
+    /// Bring the running window forward, unshaded (launching it again does this).
+    Show,
     /// Radios and related devices on USB, their ports, and radio programs running.
     Ls,
     /// What the radio is doing, decoded, plus who else uses it.
@@ -496,6 +498,7 @@ pub async fn run(cli: &Cli, env: &mut Env) -> Result<(), Exit> {
     let Some(cmd) = cli.cmd.clone() else { return Ok(()) };
     match cmd {
         Cmd::Gui | Cmd::Daemon => Ok(()),
+        Cmd::Show => Err(Exit::NotConnected(anyhow!("no S-CTRL window is running"))),
         Cmd::Ls => {
             let devs = device::scan();
             let host = HostView::gather(device::find_spartacus(cli.serial.as_deref()).as_ref());
@@ -972,33 +975,13 @@ async fn usb_audio(cli: &Cli, env: &mut Env) -> Result<(), Exit> {
         }
         _ => {}
     }
-    let port = dev
-        .link_port()
-        .ok_or_else(|| Exit::NotConnected(anyhow!("no DIAG port")))?;
-    if let Some(who) = sctrl_core::session::port_holders_text(&port) {
-        return Err(Exit::NotConnected(anyhow!("{} is held by {who}", port.display())));
-    }
-    let mut c = sctrl_core::console::TextConsole::open(&port).await?;
-    let _ = c.cmd("exit", Duration::from_secs(3)).await; // the port goes away with the reply
-    drop(c);
-    let end = Instant::now() + Duration::from_secs(20);
-    while Instant::now() < end {
-        tokio::time::sleep(Duration::from_millis(250)).await;
-        if let Some(d) = device::find_spartacus(Some(&dev.serial))
-            && d.personality() == Some(device::Personality::Audio)
-            && d.link_port().is_some()
-        {
-            env.say(if cli.json {
-                json!({"ok": true, "personality": "audio"}).to_string()
-            } else {
-                "sound card + CAT/LINK ports up".into()
-            });
-            return Ok(());
-        }
-    }
-    Err(Exit::Timeout(anyhow!(
-        "the radio did not come back as a sound card within 20 s"
-    )))
+    sctrl_core::console::leave_diag(&dev).await?;
+    env.say(if cli.json {
+        json!({"ok": true, "personality": "audio"}).to_string()
+    } else {
+        "sound card + CAT/LINK ports up".into()
+    });
+    Ok(())
 }
 
 /// The PC speaker's plan, for people.
