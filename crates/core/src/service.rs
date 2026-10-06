@@ -160,7 +160,8 @@ impl Service {
     /// should. The sleep inhibitor follows the radio's ARM; a CAT program
     /// (WSJT-X) appearing ends S-CTRL's ARM; the radio's monitor mix (its
     /// headphone audio, sidetone and trainer included, into the USB capture)
-    /// is on while the PC speaker plays a mode other than DIGI.
+    /// is on while the PC speaker plays a mode other than DIGI and no other
+    /// program records the radio.
     async fn keep_in_step(&self) {
         let mut monitor_sent: Option<(Instant, bool, bool)> = None;
         loop {
@@ -186,9 +187,11 @@ impl Service {
                 }
             }
             if let Some(audio) = self.audio() {
-                let wish = audio.wish();
                 let phones_off = self.config().pc_speaker.radio_phones_off;
-                let on = wish.enabled && st.mode != 5 && !st.usb_iq() && !st.diag_personality();
+                // Only while the loopback really plays and nothing else
+                // records the radio: the mix replaces the receive audio in
+                // the capture for every program reading it.
+                let on = audio.status().monitor_ok && st.mode != 5 && !st.usb_iq() && !st.diag_personality();
                 let phones = on && phones_off;
                 let differs = st.monitor_mix() != on || st.phones_off() != phones;
                 let recently = monitor_sent

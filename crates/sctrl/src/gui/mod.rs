@@ -631,6 +631,41 @@ impl App {
         {
             ui.label(RichText::new(n).small().color(skin::WARN));
         }
+        // The rule that keeps the radio from clocking (or becoming) the PC's
+        // audio: offered while the PC speaker is on and it is not in effect.
+        if w.enabled && !st.rule_active {
+            use sctrl_core::audio;
+            if !audio::wp_rule_installed() {
+                let b = ui
+                    .small_button("INSTALL AUDIO RULE")
+                    .on_hover_text(format!("writes {}", audio::wp_rule_path().display()));
+                if b.clicked() && self.act.may_act() {
+                    match audio::install_wp_rule() {
+                        Ok(p) => self.act.toast(format!("audio rule written to {}", p.display()), false),
+                        Err(e) => self.act.toast(format!("audio rule: {e:#}"), true),
+                    }
+                }
+            } else {
+                let b = ui
+                    .small_button("RESTART WIREPLUMBER")
+                    .on_hover_text("applies the audio rule now: all of this PC's audio pauses for about a second");
+                if b.clicked() && self.act.may_act() {
+                    // --no-block: the window does not wait for it.
+                    let ok = std::process::Command::new("systemctl")
+                        .args(["--user", "--no-block", "restart", "wireplumber"])
+                        .status()
+                        .is_ok_and(|s| s.success());
+                    self.act.toast(
+                        if ok {
+                            "WirePlumber restarting"
+                        } else {
+                            "could not restart WirePlumber"
+                        },
+                        !ok,
+                    );
+                }
+            }
+        }
         if self.act.may_act()
             && (w.enabled != before.enabled || w.digi != before.digi || (w.volume - before.volume).abs() > 0.001)
         {

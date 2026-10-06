@@ -381,6 +381,7 @@ pub fn status_json(s: &Status) -> serde_json::Value {
         "armed": s.armed(), "arm_left_s": s.arm_left_s, "change_pending": s.change_pending(),
         "realtime_critical": s.realtime_critical(), "storage_busy": s.background_blocked(),
         "keyer_cannot_radiate": s.keyer_cannot_radiate(), "wpm": s.wpm,
+        "monitor_mix": s.monitor_mix(), "phones_off": s.phones_off(),
         "cat_ports_open": s.cat_ports_open(), "console_port": s.console_port(),
         "cat0_age_s": (s.cat0_age_ds != 0xFFFF).then(|| s.cat0_age_ds as f32 / 10.0),
         "rx_overruns": s.rx_overruns, "capture_gaps_10min": s.cap_gaps,

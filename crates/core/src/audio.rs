@@ -5,10 +5,18 @@
 //!   properties (vendor 0x0483, product 0x5740, serial), never by node name:
 //!   names gain `.2`, `.3` after a re-plug.
 //! - PC speaker: a supervised `pw-loopback` from the radio's capture to the
-//!   default output (or a pinned one). It is muted, not torn down, for
-//!   DIGI (unless asked), and during voice TX; it is unavailable while the
-//!   capture carries raw I/Q. It never plays into the radio's own sink. The
-//!   child gets PR_SET_PDEATHSIG, so it cannot outlive S-CTRL.
+//!   default output (or a pinned one). Not run in DIGI (unless asked), muted
+//!   during voice TX, unavailable while the capture carries raw I/Q. It
+//!   leaves the rest of the PC's audio alone: no media role (role policies
+//!   would duck or pause other programs), a moderate latency (the graph
+//!   follows the smallest one asked for), and both ends pinned so that
+//!   nothing moves them -- the capture never onto a microphone (EasyEffects
+//!   moves input streams), the playback never into the radio's own sink;
+//!   when the output changes S-CTRL restarts it there. The child gets
+//!   PR_SET_PDEATHSIG, so it cannot outlive S-CTRL.
+//! - The radio's monitor mix (sidetone in the capture, STATUS flags0 bit 6)
+//!   is asked for only while S-CTRL's loopback is the radio's only
+//!   recorder: fldigi or a recording keep the receive audio as it is.
 //! - TX guard: the radio's playback sink is its transmit audio (with USB
 //!   VOX on, anything played there transmits). A stream from a program that
 //!   is not a digital-mode program is moved off it at once, and the radio's
@@ -214,6 +222,31 @@ impl Graph {
             .unwrap_or_default()
     }
 
+    /// Programs other than S-CTRL's loopback recording from node `id`;
+    /// level meters (pavucontrol's peak streams) aside.
+    pub fn recorders(&self, id: u32) -> Vec<String> {
+        let ours = format!("input.{LOOPBACK}");
+        let mut v: Vec<String> = self
+            .links
+            .values()
+            .filter(|l| l.out_node == id)
+            .filter_map(|l| self.nodes.get(&l.in_node))
+            .filter(|n| n.class.starts_with("Stream/Input") && n.name != ours)
+            .filter(|n| {
+                let monitor = n.props.get("stream.monitor");
+                !(matches!(monitor, Some(Value::Bool(true))) || s(monitor) == "true")
+                    && s(n.props.get("media.name")) != "Peak detect"
+            })
+            .map(|n| {
+                let b = self.client_binary(n);
+                if b.is_empty() { n.name.clone() } else { b }
+            })
+            .collect();
+        v.sort();
+        v.dedup();
+        v
+    }
+
     /// Streams linked into node `id`.
     pub fn feeding(&self, id: u32) -> Vec<(&PwLink, &PwNode)> {
         self.links
@@ -256,6 +289,9 @@ pub enum PcPlan {
     Play { latency: u32, muted: Option<String> },
 }
 
+/// The radio's CW trainer page (ui_page_t).
+const PAGE_CW_TRAINER: u8 = 7;
+
 /// Modes: 0 USB, 1 LSB, 2 CW, 3 AM, 4 FM, 5 DIGI.
 pub fn pc_plan(wish: &PcWish, status: Option<&Status>, have_source: bool, pipewire: bool) -> PcPlan {
     if !wish.enabled {
@@ -286,8 +322,14 @@ pub fn pc_plan(wish: &PcWish, status: Option<&Status>, have_source: bool, pipewi
             reason: "USB RAW IQ is on: the capture carries I/Q, not audio".into(),
         };
     }
-    // CW: low latency for the sidetone and the trainer; voice: robust.
-    let latency = if s.mode == 2 { 64 } else { 256 };
+    // CW and the trainer: low latency for the sidetone (2.7 ms quanta);
+    // voice: 10.7 ms. The PC's whole graph runs at the smallest latency any
+    // stream asks for, so less would cost every other program wake-ups.
+    let latency = if s.mode == 2 || s.page == PAGE_CW_TRAINER {
+        128
+    } else {
+        512
+    };
     let muted = if s.mode == 5 && !wish.digi {
         Some("DIGI: off unless 'play DIGI' is on".to_string())
     } else if s.transmitting() && matches!(s.mode, 0 | 1 | 3 | 4) {
@@ -321,6 +363,13 @@ pub struct AudioStatus {
     pub plan: Option<PcPlan>,
     pub volume: f32,
     pub notes: Vec<String>,
+    /// The loopback plays and is the radio's only recorder: the radio may mix
+    /// its headphone audio (sidetone) into the capture (MONITOR).
+    pub monitor_ok: bool,
+    /// Other programs recording from the radio.
+    pub recorders: Vec<String>,
+    /// The WirePlumber rule is in effect on the radio's nodes.
+    pub rule_active: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -517,6 +566,14 @@ impl AudioService {
                 Some(name) if !name.contains("Chireix_SPARTACUS") => graph.node_named(name).cloned(),
                 _ => graph.safe_output().cloned(),
             };
+            if let Some(name) = &wish.pinned
+                && output.is_none()
+                && wish.enabled
+            {
+                notes.push(format!(
+                    "the chosen output {name} is not there: pick another, or follow the default"
+                ));
+            }
             if let Some(o) = &output {
                 let n = o.name.to_ascii_lowercase();
                 if n.starts_with("bluez") {
@@ -529,15 +586,15 @@ impl AudioService {
                     );
                 }
             }
+            // DIGI, not asked for: no stream at all (a muted one would still
+            // hold the PC's graph at its latency).
+            let digi_off = st.as_ref().is_some_and(|s| s.mode == 5) && !wish.digi;
+            // Always pinned to the output chosen here, never following the
+            // default by itself: a default that became the radio's sink would
+            // otherwise take the radio's audio into its own TX input.
             let want = match (&plan, &source, &output) {
-                (PcPlan::Play { latency, .. }, Some(src), Some(out)) => {
-                    let pin = wish.pinned.is_some() || graph.default_sink.as_deref() != Some(out.name.as_str());
-                    Some(format!(
-                        "{}|{}|{}",
-                        src.serial,
-                        latency,
-                        if pin { out.name.clone() } else { String::new() }
-                    ))
+                (PcPlan::Play { latency, .. }, Some(src), Some(out)) if !digi_off => {
+                    Some(format!("{}|{}|{}", src.serial, latency, out.name))
                 }
                 _ => None,
             };
@@ -557,17 +614,19 @@ impl AudioService {
                     let src = parts.next().unwrap_or_default().to_string();
                     let lat = parts.next().unwrap_or("256").to_string();
                     let pin = parts.next().unwrap_or_default().to_string();
+                    // Both ends stay where they are put: no fallback when the
+                    // target goes (S-CTRL restarts it), no moves by policy
+                    // or by EasyEffects. No media.role: role policies would
+                    // duck or pause the PC's other audio for it.
+                    let pinned = "node.dont-reconnect = true node.dont-fallback = true node.dont-move = true";
                     let cap = format!(
-                        "{{ node.description = \"S-CTRL PC speaker (from the radio)\" node.latency = \"{lat}/48000\" stream.dont-remix = true node.dont-reconnect = true }}"
+                        "{{ node.description = \"S-CTRL PC speaker (from the radio)\" media.name = \"radio audio\" node.latency = \"{lat}/48000\" stream.dont-remix = true {pinned} }}"
                     );
                     let play = format!(
-                        "{{ node.description = \"S-CTRL PC speaker\" node.latency = \"{lat}/48000\" media.role = \"Communication\" }}"
+                        "{{ node.description = \"S-CTRL PC speaker\" media.name = \"radio audio\" node.latency = \"{lat}/48000\" {pinned} }}"
                     );
                     let mut c = command("pw-loopback");
-                    c.args(["-n", LOOPBACK, "-C", &src, "-i", &cap, "-o", &play]);
-                    if !pin.is_empty() {
-                        c.args(["-P", &pin]);
-                    }
+                    c.args(["-n", LOOPBACK, "-C", &src, "-i", &cap, "-o", &play, "-P", &pin]);
                     match c.stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
                         Ok(child) => loopback = Some((child, key)),
                         Err(e) => notes.push(format!("pw-loopback: {e}")),
@@ -593,6 +652,23 @@ impl AudioService {
                     notes.push(m.clone());
                 }
             }
+            let playing = loopback.is_some() && graph.node_named(&format!("output.{LOOPBACK}")).is_some();
+            let recorders = source.as_ref().map(|n| graph.recorders(n.id)).unwrap_or_default();
+            if playing && !recorders.is_empty() {
+                notes.push(format!(
+                    "no sidetone on the PC speaker while {} records the radio",
+                    recorders.join(", ")
+                ));
+            }
+            // Without the rule the radio outranks the PC's own output as the
+            // graph's clock: when the loopback joins them, the PC's output
+            // follows the radio, and sound already playing there clicks once.
+            let rule_active = source
+                .as_ref()
+                .is_some_and(|n| u(n.props.get("priority.driver")) == Some(1));
+            if playing && !rule_active {
+                notes.push(if wp_rule_installed() { RULE_PENDING } else { RULE_NOTE }.into());
+            }
             let mut stat = self.inner.status.lock().unwrap();
             *stat = AudioStatus {
                 pipewire,
@@ -608,6 +684,9 @@ impl AudioService {
                 plan: Some(plan),
                 volume: wish.volume,
                 notes,
+                monitor_ok: playing && recorders.is_empty(),
+                recorders,
+                rule_active,
             };
         }
     }
@@ -676,6 +755,9 @@ pub fn wp_rule_path() -> PathBuf {
 pub const WP_RULE: &str = r#"# S-CTRL: the Chireix SPARTACUS REV1's sound card.
 # - never the default input or output: its playback is the radio's TX audio,
 #   and system sounds must never reach a transmitter;
+# - never the clock of the PC's other audio (priority.driver): when S-CTRL's
+#   PC speaker joins the radio to the PC's output, the PC's output stays the
+#   driver and the radio follows, so nothing already playing glitches;
 # - clear names instead of the USB descriptor's "Virtual COM Port";
 # - no suspend: the capture stays continuous for WSJT-X and the radio's
 #   host-stream checks.
@@ -706,6 +788,11 @@ monitor.alsa.rules = [
   }
 ]
 "#;
+
+/// The status note while the PC speaker plays without the WirePlumber rule.
+pub const RULE_NOTE: &str = "the radio is this PC's audio clock while the PC speaker plays (other sound may click once as it starts): the audio rule keeps the PC's own output as the clock";
+/// The rule is written but WirePlumber has not read it yet.
+pub const RULE_PENDING: &str = "the audio rule takes effect when WirePlumber restarts (`systemctl --user restart wireplumber`: a second of silence for all audio) or at the next login";
 
 pub fn wp_rule_installed() -> bool {
     std::fs::read_to_string(wp_rule_path()).is_ok_and(|s| s == WP_RULE)
@@ -753,14 +840,14 @@ mod tests {
         assert_eq!(
             pc_plan(&on, Some(&status(0, 1, 0)), true, true),
             PcPlan::Play {
-                latency: 256,
+                latency: 512,
                 muted: None
             }
         );
         assert_eq!(
             pc_plan(&on, Some(&status(2, 1, 0)), true, true),
             PcPlan::Play {
-                latency: 64,
+                latency: 128,
                 muted: None
             }
         );
@@ -776,7 +863,7 @@ mod tests {
         assert_eq!(
             pc_plan(&digi, Some(&status(5, 1, 0)), true, true),
             PcPlan::Play {
-                latency: 256,
+                latency: 512,
                 muted: None
             }
         );
@@ -793,7 +880,19 @@ mod tests {
         assert_eq!(
             pc_plan(&on, Some(&status(2, 3, 0)), true, true),
             PcPlan::Play {
-                latency: 64,
+                latency: 128,
+                muted: None
+            }
+        );
+        // The CW trainer is low-latency whatever the mode.
+        let trainer = Status {
+            page: PAGE_CW_TRAINER,
+            ..status(0, 1, 0)
+        };
+        assert_eq!(
+            pc_plan(&on, Some(&trainer), true, true),
+            PcPlan::Play {
+                latency: 128,
                 muted: None
             }
         );
@@ -845,6 +944,29 @@ mod tests {
         let feeding = g.feeding(131);
         assert_eq!(feeding.len(), 1);
         assert_eq!(g.client_binary(feeding[0].1), "firefox");
+    }
+
+    #[test]
+    fn recorders_leave_out_the_loopback_and_meters() {
+        let mut g = graph();
+        for o in [
+            // S-CTRL's own loopback capture, pavucontrol's level meter, fldigi.
+            json!({"id": 400, "type": "PipeWire:Interface:Node", "info": {"props": {
+                "media.class": "Stream/Input/Audio", "node.name": "input.sctrl-pc-speaker"}}}),
+            json!({"id": 401, "type": "PipeWire:Interface:Node", "info": {"props": {
+                "media.class": "Stream/Input/Audio", "node.name": "pavucontrol", "media.name": "Peak detect",
+                "stream.monitor": true}}}),
+            json!({"id": 51, "type": "PipeWire:Interface:Client", "info": {"props": {"application.process.binary": "fldigi"}}}),
+            json!({"id": 402, "type": "PipeWire:Interface:Node", "info": {"props": {
+                "media.class": "Stream/Input/Audio", "node.name": "fldigi", "client.id": 51}}}),
+            json!({"id": 500, "type": "PipeWire:Interface:Link", "info": {"output-node-id": 130, "input-node-id": 400}}),
+            json!({"id": 501, "type": "PipeWire:Interface:Link", "info": {"output-node-id": 130, "input-node-id": 401}}),
+        ] {
+            g.apply(&o);
+        }
+        assert!(g.recorders(130).is_empty());
+        g.apply(&json!({"id": 502, "type": "PipeWire:Interface:Link", "info": {"output-node-id": 130, "input-node-id": 402}}));
+        assert_eq!(g.recorders(130), vec!["fldigi".to_string()]);
     }
 
     #[test]

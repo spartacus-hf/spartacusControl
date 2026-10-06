@@ -73,6 +73,15 @@ class Link:
         self.hb_on = True
         self.hb_at = 0.0
         self.hello = False
+        try:
+            self.handshake()
+        except BaseException:
+            # A failed start must not keep the port open: DTR would stay up and
+            # the radio would never see this session end.
+            os.close(self.fd)
+            raise
+
+    def handshake(self):
         os.write(self.fd, b"link 1\n")
         text = b""
         end = time.time() + 3
