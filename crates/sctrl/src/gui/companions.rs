@@ -10,6 +10,7 @@ use sctrl_core::safety::Action;
 use sctrl_proto::payload::{Status, tx_owner_name};
 
 use super::actions::Actions;
+use super::files::Files;
 use super::skin;
 use super::txwin::TxWin;
 use crate::cli::{fmt_hz, ref_name};
@@ -32,6 +33,8 @@ pub struct Companions {
     cw: bool,
     tx: bool,
     txwin: TxWin,
+    files: bool,
+    filesw: Files,
     /// Console window: the log and the line being typed.
     log: Arc<Mutex<Vec<String>>>,
     line: String,
@@ -65,12 +68,14 @@ impl Companions {
     pub fn new(act: Actions) -> Self {
         Self {
             txwin: TxWin::new(act.clone()),
+            filesw: Files::new(act.clone()),
             act,
             diag: false,
             settings: false,
             console: false,
             cw: false,
             tx: false,
+            files: false,
             log: Arc::new(Mutex::new(Vec::new())),
             line: String::new(),
             diag_out: Arc::new(Mutex::new((String::new(), Vec::new()))),
@@ -87,6 +92,8 @@ impl Companions {
         }
         ui.toggle_value(&mut self.cw, "CW");
         ui.toggle_value(&mut self.console, "CON");
+        ui.toggle_value(&mut self.files, "FILES")
+            .on_hover_text("the radio's SD card: browse, view, save a copy (read only)");
         ui.toggle_value(&mut self.tx, RichText::new("TX").color(skin::WARN))
             .on_hover_text("S-CTRL's own transmissions: ARM, TUNE, the paddle, CW memories, STOP");
     }
@@ -210,6 +217,20 @@ impl Companions {
         }
         if !self.tx {
             self.txwin.release();
+        }
+        if self.files {
+            let mut open = true;
+            ctx.show_viewport_immediate(
+                ViewportId::from_hash_of("files"),
+                builder("S-CTRL files", [560.0, 520.0]),
+                |ui, _| {
+                    if ui.ctx().input(|i| i.viewport().close_requested()) {
+                        open = false;
+                    }
+                    egui::CentralPanel::default().show(ui, |ui| self.filesw.ui(ui));
+                },
+            );
+            self.files = open;
         }
         if self.cw {
             let mut open = true;

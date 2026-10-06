@@ -284,6 +284,8 @@ impl Service {
         );
         let c = self.config().pc_speaker;
         let mut w = audio.wish();
+        w.enabled = c.enabled;
+        w.digi = c.digi;
         w.volume = c.volume.clamp(0.0, 1.5);
         w.pinned = c.pinned.clone();
         audio.set_wish(w);

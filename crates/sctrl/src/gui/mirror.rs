@@ -1,17 +1,19 @@
 //! The radio's screen as a texture: pages the LINK reports dirty are
 //! re-rendered into an RGBA buffer and uploaded as a partial update, so the
-//! GPU sees only what changed. The waterfall band is drawn from SPECTRUM
-//! lines (the band's framebuffer bytes on the radio are not pixels).
+//! GPU sees only what changed. The waterfall band is drawn from the link's
+//! SPECTRUM history (the band's framebuffer bytes on the radio are not
+//! pixels).
 
 use eframe::egui::{self, ColorImage, TextureHandle, TextureOptions};
 use sctrl_proto::screen::{self, Screen};
-use sctrl_proto::spectrum::{SpectrumLine, Waterfall};
+use sctrl_proto::spectrum::Waterfall;
+
+/// A dirty-mask bit past the pages: a SPECTRUM frame came (the band redraws).
+pub const BAND: u32 = 1 << 31;
 
 pub struct Mirror {
     rgba: Vec<u8>,
     tex: Option<TextureHandle>,
-    /// The band's history.
-    waterfall: Waterfall,
 }
 
 impl Default for Mirror {
@@ -19,7 +21,6 @@ impl Default for Mirror {
         Self {
             rgba: vec![0; screen::W * screen::H * 4],
             tex: None,
-            waterfall: Waterfall::default(),
         }
     }
 }
@@ -35,20 +36,17 @@ impl Mirror {
         })
     }
 
-    /// New SPECTRUM data: a new history line when its sequence advanced.
-    pub fn spectrum(&mut self, line: &SpectrumLine) {
-        self.waterfall.push(line);
-    }
-
-    /// Re-render `dirty` pages (and the band) from `s` and upload them.
-    pub fn update(&mut self, ctx: &egui::Context, s: &Screen, dirty: u32) {
+    /// Re-render `dirty` pages (all of the band for [`BAND`]) from `s` and
+    /// `wf` and upload them.
+    pub fn update(&mut self, ctx: &egui::Context, s: &Screen, wf: &Waterfall, dirty: u32) {
+        let dirty = (dirty & !BAND) | if dirty & BAND != 0 { s.band_pages } else { 0 };
         if dirty == 0 {
             return;
         }
         for p in 0..screen::PAGES {
             if dirty & (1 << p) != 0 {
                 if s.is_band(p) {
-                    self.waterfall.draw_page(s, p, &mut self.rgba);
+                    wf.draw_page(s, p, &mut self.rgba);
                 } else {
                     s.render_page_rgba(p, &mut self.rgba);
                 }

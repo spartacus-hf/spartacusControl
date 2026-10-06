@@ -4,12 +4,13 @@
 
 mod actions;
 mod companions;
+mod files;
 mod mirror;
 mod skin;
 mod txwin;
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, RichText, Sense, Stroke, Vec2, ViewportCommand, X11WindowType};
@@ -20,7 +21,6 @@ use sctrl_core::service::{ConnState, Service};
 use sctrl_proto::frame::{Input, sub};
 use sctrl_proto::payload::{Status, tx_owner_name};
 use sctrl_proto::screen;
-use sctrl_proto::spectrum::SpectrumLine;
 
 use actions::{Actions, Toast};
 use mirror::Mirror;
@@ -107,7 +107,6 @@ pub struct App {
     toasts: Vec<Toast>,
     mirror: Mirror,
     dirty: Arc<AtomicU32>,
-    spectrum: Arc<Mutex<Option<Arc<SpectrumLine>>>>,
     scale: f32,
     shade: bool,
     /// The shade buttons ask; the next frame switches (never mid-frame,
@@ -136,9 +135,8 @@ impl App {
         skin::apply(&cc.egui_ctx);
         let (act, toasts_rx) = Actions::new(svc.clone(), rt.clone(), cc.egui_ctx.clone());
         let dirty = Arc::new(AtomicU32::new(ALL_PAGES));
-        let spectrum = Arc::new(Mutex::new(None));
         // Pump: what the radio pushes marks pages dirty and wakes the window.
-        let (d, sp, ctx) = (dirty.clone(), spectrum.clone(), cc.egui_ctx.clone());
+        let (d, ctx) = (dirty.clone(), cc.egui_ctx.clone());
         let mut rx = svc.subscribe();
         let mut state = svc.watch_state();
         rt.spawn(async move {
@@ -149,9 +147,8 @@ impl App {
                         Ok(LinkEvent::Hello(_)) | Ok(LinkEvent::Closed(_)) => {
                             d.store(ALL_PAGES, Ordering::Relaxed);
                         }
-                        Ok(LinkEvent::Spectrum(l)) => {
-                            *sp.lock().unwrap() = Some(l);
-                            d.fetch_or(ALL_PAGES, Ordering::Relaxed);
+                        Ok(LinkEvent::Spectrum(_)) => {
+                            d.fetch_or(mirror::BAND, Ordering::Relaxed);
                         }
                         Ok(_) => {}
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
@@ -210,7 +207,6 @@ impl App {
             toasts: Vec::new(),
             mirror: Mirror::default(),
             dirty,
-            spectrum,
             scale: if [1.0, 1.5, 2.0, 3.0].contains(&cfg.gui.scale) {
                 cfg.gui.scale
             } else {
@@ -421,15 +417,14 @@ impl App {
         let ctx = ui.ctx().clone();
         let mask = self.dirty.swap(0, Ordering::Relaxed);
         if mask != 0 {
-            if let Some(l) = self.spectrum.lock().unwrap().take() {
-                self.mirror.spectrum(&l);
-            }
             match self.act.svc.link() {
                 Some(link) => {
                     let st = link.state.lock().unwrap();
-                    self.mirror.update(&ctx, &st.screen, mask);
+                    self.mirror.update(&ctx, &st.screen, &st.waterfall, mask);
                 }
-                None => self.mirror.update(&ctx, &sctrl_proto::screen::Screen::new(), ALL_PAGES),
+                None => self
+                    .mirror
+                    .update(&ctx, &screen::Screen::new(), &Default::default(), ALL_PAGES),
             }
         }
         let size = Vec2::new(screen::W as f32 * self.scale, screen::H as f32 * self.scale);
@@ -563,6 +558,23 @@ impl App {
                     for (name, hz) in BANDS {
                         if ui.selectable_label(false, format!("{name} {}", fmt_hz(hz))).clicked() {
                             self.cat(Action::Band, format!("FA{hz:011};"), None);
+                        }
+                    }
+                });
+            // The radio's pages, one click each (TX TEST changes the mode).
+            egui::ComboBox::from_id_salt("page")
+                .selected_text("page")
+                .width(70.0)
+                .show_ui(ui, |ui| {
+                    for (name, id) in crate::tx_cli::GOTO_PAGES {
+                        if ui.selectable_label(s.page == id, name).clicked()
+                            && let Some(l) = self.act.svc.link()
+                        {
+                            let action = if id == 6 { Action::Mode } else { Action::PanelInput };
+                            self.act.run(action, self.took_control, async move {
+                                l.input(Input::OpenPage, id as i8).await?;
+                                Ok(None)
+                            });
                         }
                     }
                 });
@@ -708,6 +720,15 @@ impl App {
         if self.act.may_act()
             && (w.enabled != before.enabled || w.digi != before.digi || (w.volume - before.volume).abs() > 0.001)
         {
+            if (w.enabled, w.digi) != (before.enabled, before.digi) {
+                let (on, digi) = (w.enabled, w.digi);
+                if let Err(e) = self.act.svc.update_config(move |c| {
+                    c.pc_speaker.enabled = on;
+                    c.pc_speaker.digi = digi;
+                }) {
+                    self.act.toast(format!("PC speaker choice not saved: {e:#}"), true);
+                }
+            }
             audio.set_wish(w);
         }
     }

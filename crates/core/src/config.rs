@@ -36,6 +36,10 @@ impl Default for CwConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct PcSpeakerConfig {
+    /// The PC speaker plays (the last choice, kept across starts).
+    pub enabled: bool,
+    /// Play DIGI too.
+    pub digi: bool,
     /// 0.0 ..= 1.5
     pub volume: f32,
     /// Output sink node.name; None follows the desktop's default output.
@@ -49,6 +53,8 @@ pub struct PcSpeakerConfig {
 impl Default for PcSpeakerConfig {
     fn default() -> Self {
         Self {
+            enabled: true,
+            digi: false,
             volume: 0.8,
             pinned: None,
             radio_phones_off: false,
@@ -121,5 +127,9 @@ mod tests {
         assert_eq!(c.tx.tune_max_ms, 2000);
         assert_eq!(c.tx.key_max_ms, TxPolicy::default().key_max_ms);
         assert_eq!(c.gui, GuiConfig::default());
+        // A file from before on/off was kept: the speaker plays.
+        let c: Config = serde_json::from_str(r#"{"pc_speaker": {"volume": 1.15}}"#).unwrap();
+        assert!(c.pc_speaker.enabled && !c.pc_speaker.digi);
+        assert_eq!(c.pc_speaker.volume, 1.15);
     }
 }

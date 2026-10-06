@@ -113,15 +113,26 @@ pub enum Cmd {
     },
     /// Open a radio page: home, freq, diag, tx-test, trainer, sd, pd, waterfall.
     Goto { page: String },
-    /// PipeWire: `status`; `pc on|off` (PC speaker; --digi, --volume, --output);
+    /// The radio's SD card, read only: `ls [folder]`, `get <file> [-o out]`.
+    Sd {
+        what: String,
+        path: Option<String>,
+        /// Where `get` writes (default: the file's name, here).
+        #[arg(short, long)]
+        out: Option<std::path::PathBuf>,
+    },
+    /// PipeWire: `status`; `pc on|off` (PC speaker; --digi/--no-digi, --volume, --output; kept for the next start);
     /// `phones on|off` (the radio's own headphones while the PC speaker plays);
     /// `guard on|off` (moving other programs off the radio's TX audio).
     Audio {
         what: String,
         arg: Option<String>,
         /// Play DIGI too (off by default).
-        #[arg(long)]
+        #[arg(long, conflicts_with = "no_digi")]
         digi: bool,
+        /// Stop playing DIGI.
+        #[arg(long)]
+        no_digi: bool,
         /// 0.0 to 1.5.
         #[arg(long)]
         volume: Option<f32>,
@@ -742,11 +753,68 @@ pub async fn run(cli: &Cli, env: &mut Env) -> Result<(), Exit> {
             what,
             arg,
             digi,
+            no_digi,
             volume,
             output,
-        } => audio_cmd(cli, env, &what, arg.as_deref(), digi, volume, output).await,
+        } => {
+            let digi = (digi || no_digi).then_some(digi);
+            audio_cmd(cli, env, &what, arg.as_deref(), digi, volume, output).await
+        }
         Cmd::Tx { what } => crate::tx_cli::run(cli, env, what).await,
         Cmd::Goto { page } => crate::tx_cli::goto(cli, env, &page).await,
+        Cmd::Sd { what, path, out } => {
+            let dev = env.device(cli.serial.as_deref())?;
+            let s = env.open(&dev).await?;
+            let l = s.need_link()?;
+            let path = path.unwrap_or_default();
+            let name = path.rsplit('/').next().unwrap_or(&path).to_string();
+            let r = match what.as_str() {
+                "ls" => sctrl_core::sdcard::ls(l, &path).await.map(|entries| {
+                    if cli.json {
+                        env.say(json!({"ok": true, "path": path, "entries": entries}).to_string());
+                    } else {
+                        for e in entries {
+                            env.say(if e.dir {
+                                format!("{:>10}  {}/", "", e.name)
+                            } else {
+                                format!("{:>10}  {}", e.size, e.name)
+                            });
+                        }
+                    }
+                }),
+                "get" if !path.is_empty() && out.is_none() && std::path::Path::new(&name).exists() => {
+                    // Only an explicit -o replaces a file.
+                    Err(anyhow!(
+                        "{name} exists here: -o <file> to replace it or to save elsewhere"
+                    ))
+                }
+                "get" if !path.is_empty() => {
+                    let quiet = cli.json;
+                    let data = sctrl_core::sdcard::get(l, &path, |done, total| {
+                        if !quiet {
+                            eprint!("\r{done}/{total} bytes");
+                        }
+                    })
+                    .await;
+                    if !quiet {
+                        eprintln!();
+                    }
+                    data.and_then(|d| {
+                        let to = out.unwrap_or_else(|| name.into());
+                        std::fs::write(&to, &d).map_err(|e| anyhow!("{}: {e}", to.display()))?;
+                        env.say(if cli.json {
+                            json!({"ok": true, "file": to, "bytes": d.len()}).to_string()
+                        } else {
+                            format!("{} ({} bytes)", to.display(), d.len())
+                        });
+                        Ok(())
+                    })
+                }
+                _ => Err(anyhow!("sd ls [folder] | sd get <file> [-o out]")),
+            };
+            s.close().await;
+            r.map_err(Exit::Radio)
+        }
         Cmd::Get { setting } => setting_cmd(cli, env, &setting, None).await,
         Cmd::Set { setting, value } => setting_cmd(cli, env, &setting, Some(&value)).await,
         Cmd::Watch { what, count } => {
@@ -933,12 +1001,23 @@ async fn usb_audio(cli: &Cli, env: &mut Env) -> Result<(), Exit> {
     )))
 }
 
+/// The PC speaker's plan, for people.
+fn plan_words(p: Option<&sctrl_core::audio::PcPlan>) -> String {
+    use sctrl_core::audio::PcPlan;
+    match p {
+        None | Some(PcPlan::Off) => "off".into(),
+        Some(PcPlan::Unavailable { reason }) => format!("not playing ({reason})"),
+        Some(PcPlan::Play { muted: Some(why), .. }) => format!("quiet ({why})"),
+        Some(PcPlan::Play { latency, .. }) => format!("playing ({:.1} ms buffer)", *latency as f32 * 1000.0 / 48000.0),
+    }
+}
+
 async fn audio_cmd(
     cli: &Cli,
     env: &mut Env,
     what: &str,
     arg: Option<&str>,
-    digi: bool,
+    digi: Option<bool>,
     volume: Option<f32>,
     output: Option<String>,
 ) -> Result<(), Exit> {
@@ -992,8 +1071,8 @@ async fn audio_cmd(
                 match st {
                     Some(s) => {
                         env.say(format!(
-                            "PC speaker: {:?}  output {}  volume {:.0}%",
-                            s.plan,
+                            "PC speaker: {}  output {}  volume {:.0}%",
+                            plan_words(s.plan.as_ref()),
                             s.output.unwrap_or("-".into()),
                             s.volume * 100.0
                         ));
@@ -1019,8 +1098,8 @@ async fn audio_cmd(
                 None => {}
                 Some(x) => return Err(Exit::Radio(anyhow!("audio pc {x}: on or off"))),
             }
-            if digi {
-                w.digi = true;
+            if let Some(d) = digi {
+                w.digi = d;
             }
             if let Some(v) = volume {
                 w.volume = v.clamp(0.0, 1.5);
@@ -1038,10 +1117,12 @@ async fn audio_cmd(
             }
             a.set_wish(w.clone());
             if let Some(svc) = env.service() {
-                let (vol, pin) = (w.volume, w.pinned.clone());
+                let w = w.clone();
                 svc.update_config(move |c| {
-                    c.pc_speaker.volume = vol;
-                    c.pc_speaker.pinned = pin;
+                    c.pc_speaker.enabled = w.enabled;
+                    c.pc_speaker.digi = w.digi;
+                    c.pc_speaker.volume = w.volume;
+                    c.pc_speaker.pinned = w.pinned;
                 })?;
             }
             tokio::time::sleep(Duration::from_millis(700)).await;
@@ -1050,9 +1131,10 @@ async fn audio_cmd(
                 env.say(json!({"ok": true, "wish": w, "status": st}).to_string());
             } else {
                 env.say(format!(
-                    "PC speaker {}: {:?}  output {}",
+                    "PC speaker {}{}: {}  output {}",
                     if w.enabled { "on" } else { "off" },
-                    st.plan,
+                    if w.digi { " (DIGI too)" } else { "" },
+                    plan_words(st.plan.as_ref()),
                     st.output.unwrap_or("-".into())
                 ));
             }

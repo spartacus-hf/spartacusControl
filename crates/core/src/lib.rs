@@ -10,6 +10,7 @@ pub mod ipc;
 pub mod link;
 pub mod procs;
 pub mod safety;
+pub mod sdcard;
 pub mod service;
 pub mod session;
 pub mod tty;

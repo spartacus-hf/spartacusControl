@@ -187,9 +187,11 @@ content.
 
 ### 0x04 BAND (not sent by v1 firmware)
 
-Reserved. The band pages are the SCREEN frames with flag bit 0. When the band comes or
-goes (the WATERFALL page opens or closes) the radio sends every page again, so each page's
-flag is fresh.
+Reserved. The band pages are the SCREEN frames with flag bit 0. When the band comes, goes
+or moves (the WATERFALL page opens or closes, its layout changes) the radio sends every page
+again, so each page's flag is fresh. A band page goes only then and on SUB or a full
+REFRESH, never because the waterfall redrew it: the host keeps a page's flag until that page
+comes again.
 
 ### 0x05 SPECTRUM
 
@@ -200,9 +202,9 @@ data.
 
 | Off | Type | Field |
 |---|---|---|
-| 0 | u16 | line sequence: advances when a new history line exists (the host appends a line only then; otherwise only the trace, axis or scale changed) |
+| 0 | u16 | line sequence: advances when a new history line exists (the host appends a line only then; otherwise only the trace, axis or scale changed). The SPECTRUM layout keeps no history to draw: its line is not one |
 | 2 | u8 | flags: bit 0 trace follows, bit 1 peak follows |
-| 3 | u8 | palette (0 CLASSIC, 1 GRAY, 2 HEAT, 3 OCEAN) |
+| 3 | u8 | bits 0-3 palette (0 CLASSIC, 1 GRAY, 2 HEAT, 3 OCEAN); bits 4-7 layout (0 WATERFALL, 1 SPLIT, 2 SPECTRUM) |
 | 4 | u16 | width `w` in pixels (304); the centre pixel is `w / 2` |
 | 6 | u32 | centre Hz (at the centre pixel) |
 | 10 | f32 | Hz per pixel |
@@ -224,6 +226,12 @@ data.
 | 38 | u8[w/2] | the newest history line: 4-bit levels; pixel `x` is the low nibble of byte `x/2` when `x` is even, the high nibble when odd |
 | ... | u8[w] | trace, if flag bit 0: dBFS + 160, clamped to 1..255; 0 = no data |
 | ... | u8[w] | peak hold, if flag bit 1: dBFS + 160; 0 = empty |
+
+The host draws the band as `ui_waterfall.c` does. The band's pages (SCREEN flag bit 0) hold
+the spectrum on top (all of them in SPECTRUM, `(rows * 3 / 8) & ~7` rows in SPLIT), then the
+history, newest line first, each line `h` rows: the smallest `h` of 2..8 with
+`(history rows / h + 1) * 152 + extra <= pages * 320`, `extra` 1216 with a spectrum, else 0.
+FILL and MARKERS do not travel; the host draws their defaults (fill on, dial and pass band).
 
 ### 0x06 EVENT (not sent by v1 firmware)
 
