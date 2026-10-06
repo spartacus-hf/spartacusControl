@@ -179,14 +179,11 @@ pub struct Env {
 impl Env {
     pub fn stdout() -> Self {
         Self {
-            Self {
             out: Box::new(|s| {
                 use std::io::Write;
                 // A closed pipe (`sctrl ... | head`) is not an error worth a panic.
                 let _ = writeln!(std::io::stdout(), "{s}");
             }),
-            shared: None,
-        }
             shared: None,
         }
     }
