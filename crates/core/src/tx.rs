@@ -23,6 +23,7 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -43,6 +44,13 @@ pub const BENCH_KEY_CEIL_MS: u32 = 1000;
 /// The radio's page and mode numbers (link spec, STATUS).
 pub const PAGE_TX_TEST: u8 = 6;
 pub const MODE_CW: u8 = 2;
+
+/// Practice: the paddle or a memory with TX MUTE on. The radio keys only its
+/// sidetone and takes the paddle without ARM (link spec section 6), so S-CTRL
+/// asks neither for ARM nor for the load -- and never arms for it.
+pub fn practice(kind: TxKind, s: &Status) -> bool {
+    kind != TxKind::Tune && s.tx_mute()
+}
 
 // ---- the band plan ----
 
@@ -291,8 +299,10 @@ pub fn checklist(kind: TxKind, policy: &TxPolicy, f: &Facts) -> Vec<Check> {
             policy.min_vin_mv as f32 / 1000.0
         ),
     ));
+    let practising = practice(kind, s);
     match band_of(policy.region, s.dial_hz) {
         Some(b) => v.push(chk("band plan", true, format!("{b} ({:?})", policy.region))),
+        None if practising => v.push(chk("band plan", true, "practice: no RF")),
         None => v.push(chk(
             "band plan",
             false,
@@ -371,12 +381,13 @@ pub fn checklist(kind: TxKind, policy: &TxPolicy, f: &Facts) -> Vec<Check> {
         ));
     }
     v.push(match f.load {
+        _ if practising => chk("antenna/load", true, "practice: no RF"),
         Some(Load::DummyLoad) => chk("antenna/load", true, "50 ohm dummy load"),
         Some(Load::Antenna) => chk("antenna/load", true, "antenna"),
         None => chk(
             "antenna/load",
             false,
-            "say what the radio transmits into: --load dummy or --load antenna",
+            "say what the radio transmits into (TX window: RF goes into; CLI: --load dummy|antenna)",
         ),
     });
     let budget = policy.duty_budget_ms();
@@ -392,8 +403,10 @@ pub fn checklist(kind: TxKind, policy: &TxPolicy, f: &Facts) -> Vec<Check> {
     ));
     v.push(chk(
         "ARM",
-        s.armed(),
-        if s.armed() {
+        s.armed() || practising,
+        if practising {
+            "practice: not needed".to_string()
+        } else if s.armed() {
             format!("armed, {} s left", s.arm_left_s)
         } else {
             "not armed: `sctrl tx arm` (or ARM in the window)".to_string()
@@ -530,7 +543,8 @@ pub struct TxController {
 #[error("{}", .0.iter().map(|c| format!("{}: {}", c.item, c.detail)).collect::<Vec<_>>().join("; "))]
 pub struct Refused(pub Vec<Check>);
 
-fn log_path() -> PathBuf {
+/// The TX audit log (JSON lines).
+pub fn log_path() -> PathBuf {
     let base = std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/state"));
@@ -728,7 +742,14 @@ impl TxController {
             );
         }
         let rep = self
-            .hold(link, TxKind::Tune, ms, || async { Ok(()) }, || payload::tune(false))
+            .hold(
+                link,
+                TxKind::Tune,
+                ms,
+                || async { Ok(()) },
+                || payload::tune(false),
+                None,
+            )
             .await;
         self.finish(rep)
     }
@@ -740,12 +761,11 @@ impl TxController {
         let p = self.policy();
         let ms = ms.min(p.key_ceiling_ms(TxKind::Paddle));
         self.checked(TxKind::Paddle, link, cx, ms as u64)?;
-        link.request_ok(payload::tx_arm(true, ms + 100, p.memory_max_s, p.arm_ttl_s))
-            .await?;
+        let practising = self.arm_for(link, TxKind::Paddle, ms + 100).await?;
         audit(
             self.origin,
             "key",
-            serde_json::json!({"ms": ms, "dit": dit, "dah": dah}),
+            serde_json::json!({"ms": ms, "dit": dit, "dah": dah, "practice": practising}),
         );
         let rep = self
             .hold(
@@ -757,9 +777,53 @@ impl TxController {
                     link.send(payload::paddle(dit, dah)).await.map(|_| ())
                 },
                 || payload::paddle(false, false),
+                None,
             )
             .await;
         self.finish(rep)
+    }
+
+    /// The window's paddle: keyed while `levers` (bit 0 DIT, bit 1 DAH) is
+    /// non-zero, each change sent at once, refreshed every 100 ms, and at
+    /// most the policy's key-down; it ends when the levers are let go.
+    pub async fn paddle(&self, link: &Link, cx: &Context, levers: Arc<AtomicU8>) -> Result<TxReport> {
+        let _busy = self.take_busy()?;
+        let p = self.policy();
+        let ms = p.key_ceiling_ms(TxKind::Paddle);
+        self.checked(TxKind::Paddle, link, cx, ms as u64)?;
+        let practising = self.arm_for(link, TxKind::Paddle, ms + 100).await?;
+        audit(
+            self.origin,
+            "paddle",
+            serde_json::json!({"max_ms": ms, "practice": practising}),
+        );
+        let l2 = levers.clone();
+        let rep = self
+            .hold(
+                link,
+                TxKind::Paddle,
+                ms,
+                || {
+                    let v = l2.load(Ordering::Relaxed);
+                    async move { link.send(payload::paddle(v & 1 != 0, v & 2 != 0)).await.map(|_| ()) }
+                },
+                || payload::paddle(false, false),
+                Some(&levers),
+            )
+            .await;
+        self.finish(rep)
+    }
+
+    /// Before a key-down: the radio's own cap just past the host's (TX_ARM),
+    /// except in practice, where nothing is armed. Returns "practice".
+    async fn arm_for(&self, link: &Link, kind: TxKind, cap_ms: u32) -> Result<bool> {
+        let practising = link.snapshot().status.is_some_and(|s| practice(kind, &s));
+        if !practising {
+            let p = self.policy();
+            link.request_ok(payload::tx_arm(true, cap_ms, p.memory_max_s, p.arm_ttl_s))
+                .await?;
+        }
+        Ok(practising)
     }
 
     /// Send a CW memory through the radio's keyer.
@@ -779,13 +843,15 @@ impl TxController {
         // Each element is short; the whole is bounded by its length.
         self.checked(TxKind::Memory, link, cx, est / 2)?;
         let mem_s = (est / 1000 + 2).min(p.memory_max_s as u64) as u32;
-        link.request_ok(payload::tx_arm(
-            true,
-            p.key_ceiling_ms(TxKind::Memory),
-            mem_s,
-            p.arm_ttl_s,
-        ))
-        .await?;
+        if !link.snapshot().status.is_some_and(|s| practice(TxKind::Memory, &s)) {
+            link.request_ok(payload::tx_arm(
+                true,
+                p.key_ceiling_ms(TxKind::Memory),
+                mem_s,
+                p.arm_ttl_s,
+            ))
+            .await?;
+        }
         audit(
             self.origin,
             "memory",
@@ -799,6 +865,7 @@ impl TxController {
                 (est + 1500) as u32,
                 || async { Ok(()) },
                 payload::tx_stop,
+                None,
             )
             .await;
         self.finish(rep)
@@ -825,7 +892,15 @@ impl TxController {
     /// Hold a key-down for up to `ms`, refreshing with `tick` every 100 ms,
     /// watching STATUS every 20 ms, and end it with `release` -- or TX_STOP
     /// at the first thing out of bounds or any error.
-    async fn hold<T, TF, R>(&self, link: &Link, kind: TxKind, ms: u32, tick: T, release: R) -> Result<TxReport>
+    async fn hold<T, TF, R>(
+        &self,
+        link: &Link,
+        kind: TxKind,
+        ms: u32,
+        tick: T,
+        release: R,
+        levers: Option<&AtomicU8>,
+    ) -> Result<TxReport>
     where
         T: Fn() -> TF,
         TF: std::future::Future<Output = Result<()>>,
@@ -847,13 +922,28 @@ impl TxController {
         };
         let mut last_tick = Instant::now() - Duration::from_secs(1);
         let mut memory_started = false;
+        let practising = link.snapshot().status.is_some_and(|s| practice(kind, &s));
+        let mut sent_levers = levers.map(|l| l.load(Ordering::Relaxed));
         let stop_reason: Option<String> = loop {
             if start.elapsed() >= Duration::from_millis(ms as u64) {
                 break if kind == TxKind::Memory {
                     Some("the memory ran past its expected length".into())
+                } else if levers.is_some() {
+                    Some(format!("held past {ms} ms (a stuck key?)"))
                 } else {
                     None
                 };
+            }
+            // The window's paddle: let go, or a lever changed (sent now).
+            if let Some(l) = levers {
+                let v = l.load(Ordering::Relaxed);
+                if v == 0 {
+                    break None;
+                }
+                if Some(v) != sent_levers {
+                    sent_levers = Some(v);
+                    last_tick = Instant::now() - Duration::from_secs(1);
+                }
             }
             if last_tick.elapsed() >= Duration::from_millis(100) {
                 last_tick = Instant::now();
@@ -861,10 +951,35 @@ impl TxController {
                     break Some(format!("link: {e:#}"));
                 }
             }
+            // The radio's own word first: a STOP or one of its caps also ends
+            // the transmission, and the carrier's tail must not read as
+            // another owner taking it.
+            let mut radio_ended: Option<&str> = None;
             while let Ok(ev) = rx.try_recv() {
                 if let LinkEvent::TxEvent(e) = ev {
-                    rep.txevents.push(format!("{:?}", e.kind()));
+                    use sctrl_proto::frame::TxEventKind as K;
+                    let why = match e.kind() {
+                        Some(K::Stopped) => Some("STOP"),
+                        Some(K::KeyCap) => Some("its key-down cap"),
+                        Some(K::HeartbeatLost) => Some("S-CTRL's heartbeat stopped"),
+                        Some(K::OtherOwner) => Some("another transmitter owner"),
+                        Some(K::TuneLeft) => Some("TX TEST closed"),
+                        Some(K::MemoryCap) => Some("its memory cap"),
+                        Some(K::Disarmed) => Some("it disarmed"),
+                        _ => None,
+                    };
+                    if let Some(w) = why {
+                        radio_ended.get_or_insert(w);
+                    }
+                    rep.txevents.push(
+                        e.kind()
+                            .map(|k| format!("{k:?}"))
+                            .unwrap_or_else(|| format!("event {}", e.kind)),
+                    );
                 }
+            }
+            if let Some(w) = radio_ended {
+                break Some(format!("the radio ended it: {w}"));
             }
             if let Some(why) = link.closed() {
                 break Some(format!("LINK closed: {why}"));
@@ -888,6 +1003,11 @@ impl TxController {
             }
             let vin = s.vin_mv as f32 / 1000.0;
             rep.min_vin_v = Some(rep.min_vin_v.map_or(vin, |m: f32| m.min(vin)));
+            // Practice that stopped being practice (TX MUTE turned off): the
+            // radio would now want ARM, and S-CTRL never armed for it.
+            if practising && !practice(kind, &s) {
+                break Some("TX MUTE went off during practice".into());
+            }
             if s.vin_mv < p.min_vin_mv {
                 break Some(format!("VIN {vin:.2} V under {:.2} V", p.min_vin_mv as f32 / 1000.0));
             }
@@ -904,7 +1024,8 @@ impl TxController {
                     break None; // sent
                 }
             }
-            tokio::time::sleep(Duration::from_millis(20)).await;
+            // A lever change goes out within 5 ms; STATUS is watched either way.
+            tokio::time::sleep(Duration::from_millis(if levers.is_some() { 5 } else { 20 })).await;
         };
         // Let go, the normal way first; TX_STOP if anything was wrong.
         let released = link.send(release()).await;
@@ -1020,6 +1141,26 @@ mod tests {
         assert_eq!(bad(TxKind::Tune, &facts(s.clone())), vec!["TX MUTE"]);
         s.page = 0;
         assert!(bad(TxKind::Paddle, &facts(s)).is_empty());
+    }
+
+    #[test]
+    fn practice_needs_no_arm_and_no_load_but_tune_does() {
+        let mut s = ok_status();
+        s.flags0 = 0x01; // TX MUTE
+        s.flags1 = 0; // not armed
+        s.dial_hz = 6_050_000; // outside the band plan
+        let mut f = facts(s.clone());
+        f.load = None;
+        assert!(bad(TxKind::Paddle, &f).is_empty(), "{:?}", bad(TxKind::Paddle, &f));
+        assert!(bad(TxKind::Memory, &f).is_empty(), "{:?}", bad(TxKind::Memory, &f));
+        s.page = PAGE_TX_TEST;
+        let mut f = facts(s);
+        f.load = None;
+        let b = bad(TxKind::Tune, &f);
+        assert!(
+            b.contains(&"ARM") && b.contains(&"antenna/load") && b.contains(&"TX MUTE"),
+            "{b:?}"
+        );
     }
 
     #[test]

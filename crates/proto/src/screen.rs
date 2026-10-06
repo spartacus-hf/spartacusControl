@@ -36,6 +36,8 @@ pub struct Screen {
     pub band_pages: u32,
     /// Pages changed since the consumer last called `take_dirty`.
     dirty: u32,
+    /// Full refreshes completed (pages flagged "last of a full refresh").
+    pub refreshes: u32,
 }
 
 impl Default for Screen {
@@ -51,6 +53,7 @@ impl Screen {
             known: [false; PAGES],
             band_pages: 0,
             dirty: 0,
+            refreshes: 0,
         }
     }
 
@@ -64,11 +67,17 @@ impl Screen {
             return None;
         }
         let flags = payload[1];
+        let done = |s: &mut Self| {
+            if flags & 0x02 != 0 {
+                s.refreshes = s.refreshes.wrapping_add(1);
+            }
+        };
         if flags & 0x01 != 0 {
             // A band page: the waterfall covers it, the host draws it.
             self.band_pages |= 1 << page;
             self.known[page] = true;
             self.dirty |= 1 << page;
+            done(self);
             return Some(page);
         }
         let data = rle::decode(&payload[2..], PAGE_BYTES)?;
@@ -76,6 +85,7 @@ impl Screen {
         self.pages[page].copy_from_slice(&data);
         self.known[page] = true;
         self.dirty |= 1 << page;
+        done(self);
         Some(page)
     }
 
@@ -135,10 +145,19 @@ impl Screen {
         }
     }
 
-    pub fn render_rgba(&self) -> Vec<u8> {
+    /// The whole screen as RGBA; band pages from `waterfall` (black
+    /// without one).
+    pub fn render_rgba(&self, waterfall: Option<&crate::spectrum::Waterfall>) -> Vec<u8> {
         let mut out = vec![0u8; W * H * 4];
         for p in 0..PAGES {
-            self.render_page_rgba(p, &mut out);
+            if self.is_band(p) {
+                match waterfall {
+                    Some(w) => w.draw_page(self, p, &mut out),
+                    None => crate::spectrum::Waterfall::default().draw_page(self, p, &mut out),
+                }
+            } else {
+                self.render_page_rgba(p, &mut out);
+            }
         }
         out
     }
@@ -175,6 +194,20 @@ mod tests {
         assert!(s.apply(&page).is_some());
         assert!(!s.is_band(20) && s.is_band(21));
         assert_eq!(s.band_first(), Some(21));
+    }
+
+    #[test]
+    fn a_full_refresh_is_counted_at_its_last_page() {
+        let mut s = Screen::new();
+        let mut page = vec![3u8, 0x00];
+        page.extend(crate::rle::encode(&[0u8; PAGE_BYTES]));
+        s.apply(&page).unwrap();
+        assert_eq!(s.refreshes, 0);
+        page[1] = 0x02;
+        s.apply(&page).unwrap();
+        assert_eq!(s.refreshes, 1);
+        assert!(s.apply(&[4, 0x03]).is_some()); // a band page can be the last
+        assert_eq!(s.refreshes, 2);
     }
 
     #[test]

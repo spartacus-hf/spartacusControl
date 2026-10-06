@@ -61,6 +61,11 @@ impl Actions {
         self.repaint.request_repaint();
     }
 
+    /// Draw the window again (a job finished).
+    pub fn repaint(&self) {
+        self.repaint.request_repaint();
+    }
+
     /// The arbiter's view right now.
     pub fn context(&self, took_control: bool, armed: bool) -> Context {
         let link = self.svc.link();

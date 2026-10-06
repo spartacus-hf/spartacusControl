@@ -15,6 +15,22 @@ pub struct Config {
     pub tx: TxPolicy,
     pub pc_speaker: PcSpeakerConfig,
     pub gui: GuiConfig,
+    pub cw: CwConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct CwConfig {
+    /// The TX window's CW memories (at most 48 characters each).
+    pub memories: Vec<String>,
+}
+
+impl Default for CwConfig {
+    fn default() -> Self {
+        Self {
+            memories: vec!["VVV".into(), "PARIS".into(), String::new(), String::new()],
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

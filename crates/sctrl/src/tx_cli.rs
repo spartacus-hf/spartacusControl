@@ -125,7 +125,7 @@ fn controller(env: &Env) -> TxController {
     }
 }
 
-fn report_lines(r: &TxReport) -> Vec<String> {
+pub(crate) fn report_lines(r: &TxReport) -> Vec<String> {
     vec![
         format!(
             "{:?}: held {} ms of {} ms, {}",

@@ -6,8 +6,9 @@ mod actions;
 mod companions;
 mod mirror;
 mod skin;
+mod txwin;
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -109,6 +110,9 @@ pub struct App {
     spectrum: Arc<Mutex<Option<Arc<SpectrumLine>>>>,
     scale: f32,
     shade: bool,
+    /// The shade buttons ask; the next frame switches (never mid-frame,
+    /// where the rest of the frame would size the window for the old view).
+    toggle_shade: bool,
     pinned: bool,
     took_control: bool,
     press: Option<Press>,
@@ -121,6 +125,10 @@ pub struct App {
     cfg: sctrl_core::config::Config,
     /// A window-manager move began: the release it eats is owed to egui.
     wm_drag: bool,
+    /// When the radio's screen was last drawn (ms since `epoch`): the radio
+    /// streams it only while it is drawn.
+    painted: Arc<AtomicU64>,
+    epoch: Instant,
 }
 
 impl App {
@@ -175,6 +183,22 @@ impl App {
                 }
             });
         }
+        // Not drawn for a while (hidden on another workspace, unmapped): the
+        // radio stops streaming its screen until it is drawn again.
+        let painted = Arc::new(AtomicU64::new(0));
+        let epoch = Instant::now();
+        {
+            let (painted, svc) = (painted.clone(), svc.clone());
+            rt.spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    let age = epoch.elapsed().as_millis() as u64 - painted.load(Ordering::Relaxed);
+                    if age > 1500 {
+                        svc.show_screen(false);
+                    }
+                }
+            });
+        }
         let (cfg, cfg_err) = sctrl_core::config::load();
         if let Some(e) = cfg_err {
             act.toast(e, true);
@@ -193,6 +217,7 @@ impl App {
                 2.0
             },
             shade: false,
+            toggle_shade: false,
             pinned: cfg.gui.always_on_top,
             cfg,
             took_control: false,
@@ -201,6 +226,8 @@ impl App {
             freq_edit: None,
             fit_h: 0.0,
             wm_drag: false,
+            painted,
+            epoch,
         }
     }
 
@@ -251,6 +278,25 @@ impl App {
         ctx.send_viewport_cmd(ViewportCommand::InnerSize(window_size(self.scale, self.shade)));
     }
 
+    fn shade_toggle(&mut self, ctx: &egui::Context) {
+        if self.act.may_act() {
+            self.toggle_shade = true;
+            ctx.request_repaint();
+        }
+    }
+
+    /// The window is as tall as what it shows (asked once per change).
+    fn fit(&mut self, ctx: &egui::Context, height: f32) {
+        let want = height.ceil();
+        if self.act.may_act() && (want - self.fit_h).abs() > 1.0 {
+            self.fit_h = want;
+            ctx.send_viewport_cmd(ViewportCommand::InnerSize(Vec2::new(
+                screen::W as f32 * self.scale + 16.0,
+                want,
+            )));
+        }
+    }
+
     // ---- the parts of the window ----
 
     fn title_bar(&mut self, ui: &mut egui::Ui) {
@@ -262,8 +308,7 @@ impl App {
             self.start_drag(&ctx);
         }
         if bar.double_clicked() {
-            self.shade = !self.shade;
-            self.resize(&ctx);
+            self.shade_toggle(&ctx);
         }
         let mut bar_hover = String::new();
         ui.horizontal(|ui| {
@@ -288,16 +333,11 @@ impl App {
                 if ui.small_button("x").on_hover_text("close S-CTRL").clicked() {
                     ctx.send_viewport_cmd(ViewportCommand::Close);
                 }
-                if ui
-                    .small_button(if self.shade { "v" } else { "^" })
-                    .on_hover_text("shade: one line")
-                    .clicked()
-                {
-                    self.shade = !self.shade;
-                    self.resize(&ctx);
+                if ui.small_button("\u{23f6}").on_hover_text("shade: one line").clicked() {
+                    self.shade_toggle(&ctx);
                 }
                 let pin = if self.pinned { "pin*" } else { "pin" };
-                if ui.small_button(pin).on_hover_text("always on top").clicked() {
+                if ui.small_button(pin).on_hover_text("always on top").clicked() && self.act.may_act() {
                     self.pinned = !self.pinned;
                     self.save_gui();
                     ctx.send_viewport_cmd(ViewportCommand::WindowLevel(if self.pinned {
@@ -312,6 +352,7 @@ impl App {
                         if ui
                             .selectable_label((self.scale - s).abs() < 0.01, format!("{s}x"))
                             .clicked()
+                            && self.act.may_act()
                         {
                             self.scale = s;
                             self.resize(&ctx);
@@ -327,27 +368,52 @@ impl App {
         bar.on_hover_text(bar_hover);
     }
 
+    /// Shaded: one line, dragged like the title bar; the arrow brings the
+    /// whole window back (so does a double click).
     fn shade_line(&mut self, ui: &mut egui::Ui, st: Option<&Status>) {
+        let ctx = ui.ctx().clone();
+        let bar = ui.interact(ui.max_rect(), ui.id().with("drag"), Sense::click_and_drag());
+        if bar.drag_started() {
+            self.start_drag(&ctx);
+        }
+        if bar.double_clicked() {
+            self.shade_toggle(&ctx);
+        }
         ui.horizontal(|ui| {
-            let r = ui.add(
-                egui::Label::new(RichText::new("S-CTRL").color(skin::FREQ).strong()).sense(Sense::click_and_drag()),
-            );
-            if r.drag_started() {
-                self.start_drag(ui.ctx());
-            }
-            if r.double_clicked() {
-                self.shade = false;
-                self.resize(ui.ctx());
-            }
-            if let Some(s) = st {
-                tx_lamp(ui, s);
-                ui.label(RichText::new(fmt_hz(s.dial_hz)).color(skin::FREQ).monospace());
-                ui.label(s.mode_name());
-                ui.label(format!("S {:.0} dBFS", s.rx_dbfs_x10 as f32 / 10.0));
-                ui.label(format!("{:.1} V", s.vin_mv as f32 / 1000.0));
-            } else {
-                ui.label(self.act.svc.state().summary());
-            }
+            ui.add(egui::Label::new(RichText::new("S-CTRL").color(skin::FREQ).strong()).selectable(false));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.small_button("x").on_hover_text("close S-CTRL").clicked() {
+                    ctx.send_viewport_cmd(ViewportCommand::Close);
+                }
+                if ui
+                    .small_button("\u{23f7}")
+                    .on_hover_text("back to the full window")
+                    .clicked()
+                {
+                    self.shade_toggle(&ctx);
+                }
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    let text = match st {
+                        Some(s) => {
+                            tx_lamp(ui, s);
+                            format!(
+                                "{} {}  S {:.0}  {:.1} V",
+                                fmt_hz(s.dial_hz),
+                                s.mode_name(),
+                                s.rx_dbfs_x10 as f32 / 10.0,
+                                s.vin_mv as f32 / 1000.0
+                            )
+                        }
+                        None => self.act.svc.state().summary(),
+                    };
+                    // Truncated, so the buttons keep their room at 1x.
+                    ui.add(
+                        egui::Label::new(RichText::new(text).color(skin::FREQ).monospace())
+                            .selectable(false)
+                            .truncate(),
+                    );
+                });
+            });
         });
     }
 
@@ -602,8 +668,16 @@ impl App {
         ui.horizontal_wrapped(|ui| {
             ui.toggle_value(&mut w.enabled, "PC SPEAKER")
                 .on_hover_text("the radio's audio on this PC's output (PipeWire loopback; DIGI only on request)");
-            ui.add(egui::Slider::new(&mut w.volume, 0.0..=1.5).show_value(false))
+            let vol = ui
+                .add(egui::Slider::new(&mut w.volume, 0.0..=1.5).show_value(false))
                 .on_hover_text("PC speaker volume");
+            // Kept for the next start once the slider is let go.
+            if (vol.drag_stopped() || (vol.changed() && !vol.dragged())) && self.act.may_act() {
+                let v = w.volume;
+                if let Err(e) = self.act.svc.update_config(move |c| c.pc_speaker.volume = v) {
+                    self.act.toast(format!("volume not saved: {e:#}"), true);
+                }
+            }
             ui.checkbox(&mut w.digi, "DIGI")
                 .on_hover_text("play DIGI too (off by default)");
             if w.enabled {
@@ -630,41 +704,6 @@ impl App {
             .filter(|n| !n.starts_with("DIGI") && !n.starts_with("voice TX"))
         {
             ui.label(RichText::new(n).small().color(skin::WARN));
-        }
-        // The rule that keeps the radio from clocking (or becoming) the PC's
-        // audio: offered while the PC speaker is on and it is not in effect.
-        if w.enabled && !st.rule_active {
-            use sctrl_core::audio;
-            if !audio::wp_rule_installed() {
-                let b = ui
-                    .small_button("INSTALL AUDIO RULE")
-                    .on_hover_text(format!("writes {}", audio::wp_rule_path().display()));
-                if b.clicked() && self.act.may_act() {
-                    match audio::install_wp_rule() {
-                        Ok(p) => self.act.toast(format!("audio rule written to {}", p.display()), false),
-                        Err(e) => self.act.toast(format!("audio rule: {e:#}"), true),
-                    }
-                }
-            } else {
-                let b = ui
-                    .small_button("RESTART WIREPLUMBER")
-                    .on_hover_text("applies the audio rule now: all of this PC's audio pauses for about a second");
-                if b.clicked() && self.act.may_act() {
-                    // --no-block: the window does not wait for it.
-                    let ok = std::process::Command::new("systemctl")
-                        .args(["--user", "--no-block", "restart", "wireplumber"])
-                        .status()
-                        .is_ok_and(|s| s.success());
-                    self.act.toast(
-                        if ok {
-                            "WirePlumber restarting"
-                        } else {
-                            "could not restart WirePlumber"
-                        },
-                        !ok,
-                    );
-                }
-            }
         }
         if self.act.may_act()
             && (w.enabled != before.enabled || w.digi != before.digi || (w.volume - before.volume).abs() > 0.001)
@@ -751,13 +790,36 @@ impl eframe::App for App {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.act.set_pass(ui.ctx());
+        if std::mem::take(&mut self.toggle_shade) {
+            self.shade = !self.shade;
+            self.fit_h = 0.0;
+        }
         let st = self.status();
+        let hidden = ui.ctx().input(|i| {
+            let v = i.viewport();
+            v.minimized.unwrap_or(false) || v.occluded.unwrap_or(false)
+        });
+        let shown = !self.shade && !hidden;
+        if shown {
+            self.painted
+                .store(self.epoch.elapsed().as_millis() as u64, Ordering::Relaxed);
+        }
+        self.act.svc.show_screen(shown);
         if self.shade {
-            egui::CentralPanel::default()
-                .frame(egui::Frame::NONE.fill(skin::BG).inner_margin(4.0))
+            let h = egui::Panel::top("shade")
+                .frame(egui::Frame::NONE.fill(skin::PANEL).inner_margin(4.0))
                 .show(ui, |ui| {
                     self.shade_line(ui, st.as_ref());
-                });
+                })
+                .response
+                .rect
+                .height();
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE.fill(skin::BG))
+                .show(ui, |_| {});
+            self.fit(ui.ctx(), h);
+            self.toasts(ui);
+            self.comp.show(ui.ctx(), st.as_ref());
             ui.ctx().request_repaint_after(Duration::from_millis(250));
             return;
         }
@@ -779,14 +841,7 @@ impl eframe::App for App {
             .height();
         // The window fits what it shows: at 1x the strip's rows wrap and need
         // more height than at 3x; never let them cover the screen.
-        let want = (top_h + screen::H as f32 * self.scale + 16.0 + strip_h).ceil();
-        if self.act.may_act() && (want - self.fit_h).abs() > 1.0 {
-            self.fit_h = want;
-            ui.ctx().send_viewport_cmd(ViewportCommand::InnerSize(Vec2::new(
-                screen::W as f32 * self.scale + 16.0,
-                want,
-            )));
-        }
+        self.fit(ui.ctx(), top_h + screen::H as f32 * self.scale + 16.0 + strip_h);
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(skin::BG).inner_margin(8.0))
             .show(ui, |ui| {

@@ -123,6 +123,55 @@ pub const PALETTES_565: [[u16; 16]; 4] = [
     ],
 ];
 
+/// The waterfall as the radio draws it in its band: the newest line at the
+/// top, each line two rows high, its 304 pixels centred in the 320-pixel row.
+#[derive(Debug, Clone, Default)]
+pub struct Waterfall {
+    /// 4-bit levels per line, newest first.
+    lines: std::collections::VecDeque<Vec<u8>>,
+    last_seq: Option<u16>,
+    palette: u8,
+}
+
+impl Waterfall {
+    /// More than a band ever shows (30 pages of 8 rows, 2 rows a line).
+    const KEEP: usize = 120;
+
+    /// A SPECTRUM frame: a new history line when its sequence advanced.
+    pub fn push(&mut self, line: &SpectrumLine) {
+        self.palette = line.palette.min(3);
+        if self.last_seq != Some(line.line_seq) {
+            self.last_seq = Some(line.line_seq);
+            self.lines.push_front(line.levels.clone());
+            self.lines.truncate(Self::KEEP);
+        }
+    }
+
+    /// Draw band page `page` of `screen` into `out` (RGBA, W x H, row
+    /// major); black where there is no history yet.
+    pub fn draw_page(&self, screen: &crate::screen::Screen, page: usize, out: &mut [u8]) {
+        use crate::screen::{W, rgb565_to_rgb};
+        let pal: Vec<[u8; 3]> = PALETTES_565[self.palette as usize]
+            .iter()
+            .map(|&c| rgb565_to_rgb(c))
+            .collect();
+        let band_top = screen.band_first().unwrap_or(page) * 8;
+        for r in 0..8 {
+            let y = page * 8 + r;
+            let line = self.lines.get(y.saturating_sub(band_top) / 2);
+            for x in 0..W {
+                let o = (y * W + x) * 4;
+                let c = match line {
+                    Some(l) if x >= 8 && x - 8 < l.len() => pal[l[x - 8] as usize & 15],
+                    _ => [0, 0, 0],
+                };
+                out[o..o + 3].copy_from_slice(&c);
+                out[o + 3] = 255;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -148,5 +197,40 @@ mod tests {
         assert_eq!(l.bottom_db, -120);
         assert_eq!(l.hz_at(0.0), 14_073_980.0);
         assert!(SpectrumLine::parse(&p[..p.len() - 1]).is_none());
+    }
+
+    #[test]
+    fn waterfall_newest_on_top_two_rows_a_line() {
+        let mut p = vec![0u8; SpectrumLine::HEADER];
+        p[4..6].copy_from_slice(&2u16.to_le_bytes());
+        p.push(0x00);
+        let mut l = SpectrumLine::parse(&p).unwrap();
+        let mut w = Waterfall::default();
+        l.levels = vec![15, 15];
+        l.line_seq = 1;
+        w.push(&l);
+        w.push(&l); // the same line again: no new history
+        l.levels = vec![0, 0];
+        l.line_seq = 2;
+        w.push(&l);
+        let mut s = crate::screen::Screen::new();
+        assert!(s.apply(&[10, 0x01]).is_some());
+        let mut out = vec![0u8; crate::screen::W * crate::screen::H * 4];
+        w.draw_page(&s, 10, &mut out);
+        let px = |x: usize, y: usize| {
+            let o = (y * crate::screen::W + x) * 4;
+            [out[o], out[o + 1], out[o + 2], out[o + 3]]
+        };
+        let pal = |i: usize| {
+            let c = crate::screen::rgb565_to_rgb(PALETTES_565[0][i]);
+            [c[0], c[1], c[2], 255]
+        };
+        // Rows 80-81: the newest line (level 0); 82-83: the older (15);
+        // 84 on: no history yet (black); outside the 304-pixel band: black.
+        assert_eq!(px(8, 80), pal(0));
+        assert_eq!(px(9, 81), pal(0));
+        assert_eq!(px(8, 82), pal(15));
+        assert_eq!(px(8, 84), [0, 0, 0, 255]);
+        assert_eq!(px(0, 82), [0, 0, 0, 255]);
     }
 }

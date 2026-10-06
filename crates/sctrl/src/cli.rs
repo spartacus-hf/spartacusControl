@@ -19,7 +19,7 @@ use sctrl_core::service::Service;
 use sctrl_core::session::{OpenError, Session};
 use sctrl_proto::frame::Input;
 use sctrl_proto::payload::{Status, tx_owner_name};
-use sctrl_proto::screen::{self, Screen};
+use sctrl_proto::screen;
 
 #[derive(Parser)]
 #[command(
@@ -115,8 +115,7 @@ pub enum Cmd {
     Goto { page: String },
     /// PipeWire: `status`; `pc on|off` (PC speaker; --digi, --volume, --output);
     /// `phones on|off` (the radio's own headphones while the PC speaker plays);
-    /// `guard on|off` (moving other programs off the radio's TX audio);
-    /// `rule` (install the WirePlumber rule).
+    /// `guard on|off` (moving other programs off the radio's TX audio).
     Audio {
         what: String,
         arg: Option<String>,
@@ -240,13 +239,13 @@ impl Env {
                 None => Err(Exit::NotConnected(anyhow!("{}", svc.state().summary()))),
             };
         }
-        Ok(Sess::Owned(Session::open(dev, LinkOptions::default()).await?))
+        Ok(Sess::Owned(Box::new(Session::open(dev, LinkOptions::default()).await?)))
     }
 }
 
 /// A radio session: our own, or the serving S-CTRL's LINK.
 pub(crate) enum Sess {
-    Owned(Session),
+    Owned(Box<Session>),
     Shared(Arc<Link>),
 }
 
@@ -260,14 +259,16 @@ impl Sess {
 
     pub(crate) fn need_link(&self) -> Result<&Link, Exit> {
         match self {
-            Sess::Owned(Session::Text { why, .. }) => Err(Exit::Radio(anyhow!("this needs the LINK ({why})"))),
+            Sess::Owned(s) if let Session::Text { why, .. } = &**s => {
+                Err(Exit::Radio(anyhow!("this needs the LINK ({why})")))
+            }
             _ => Ok(self.link().expect("a LINK")),
         }
     }
 
     fn basic_why(&self) -> Option<String> {
         match self {
-            Sess::Owned(Session::Text { why, .. }) => Some(why.clone()),
+            Sess::Owned(s) if let Session::Text { why, .. } = &**s => Some(why.clone()),
             _ => None,
         }
     }
@@ -581,18 +582,13 @@ pub async fn run(cli: &Cli, env: &mut Env) -> Result<(), Exit> {
             let dev = env.device(cli.serial.as_deref())?;
             let s = env.open(&dev).await?;
             let l = s.need_link()?;
-            let end = Instant::now() + timeout;
-            let screen: Screen = loop {
-                let snap = l.snapshot();
-                if snap.screen.known.iter().all(|k| *k) {
-                    break snap.screen;
-                }
-                if Instant::now() > end {
-                    return Err(Exit::Timeout(anyhow!("the screen did not arrive within {timeout:?}")));
-                }
-                tokio::time::sleep(Duration::from_millis(30)).await;
+            // A running S-CTRL streams the screen only while it is looked at.
+            let _lease = match env.service() {
+                Some(svc) => Some(svc.screen_lease().await.map_err(Exit::Radio)?),
+                None => None,
             };
-            let rgba = screen.render_rgba();
+            let (screen, waterfall) = l.fresh_screen(timeout).await.map_err(Exit::Timeout)?;
+            let rgba = screen.render_rgba(Some(&waterfall));
             let img =
                 image::RgbaImage::from_raw(screen::W as u32, screen::H as u32, rgba).ok_or_else(|| anyhow!("image"))?;
             let img = image::imageops::resize(
@@ -844,11 +840,7 @@ pub async fn run(cli: &Cli, env: &mut Env) -> Result<(), Exit> {
                 match s.cmd(c, timeout).await {
                     Ok(lines) => {
                         for l in &lines {
-                            let low = l.to_ascii_lowercase();
-                            if low.contains("latched")
-                                || (low.starts_with("faults=") && !low.starts_with("faults=00"))
-                                || low.contains("lockout=1")
-                            {
+                            if problem_line(l) {
                                 problems.push(format!("{c}: {l}"));
                             }
                         }
@@ -982,7 +974,7 @@ async fn audio_cmd(
             if cli.json {
                 env.say(
                     json!({"ok": true, "radio_source": src, "radio_sink": sink, "default_sink": def,
-                    "into_radio_tx": feeding, "pc_speaker": st, "wireplumber_rule": audio::wp_rule_installed()})
+                    "into_radio_tx": feeding, "pc_speaker": st})
                     .to_string(),
                 );
             } else {
@@ -1011,14 +1003,6 @@ async fn audio_cmd(
                     }
                     None => env.say("PC speaker: needs the running S-CTRL (window or `sctrl daemon`)"),
                 }
-                env.say(format!(
-                    "WirePlumber rule: {}",
-                    if audio::wp_rule_installed() {
-                        "installed"
-                    } else {
-                        "not installed (sctrl audio rule)"
-                    }
-                ));
             }
             Ok(())
         }
@@ -1106,12 +1090,7 @@ async fn audio_cmd(
             ));
             Ok(())
         }
-        "rule" => {
-            let p = audio::install_wp_rule()?;
-            env.say(format!("{} written; it applies after `systemctl --user restart wireplumber` (interrupts audio briefly) or a re-plug", p.display()));
-            Ok(())
-        }
-        other => Err(Exit::Radio(anyhow!("audio {other}: status, pc, phones, guard or rule"))),
+        other => Err(Exit::Radio(anyhow!("audio {other}: status, pc, phones or guard"))),
     }
 }
 
@@ -1156,19 +1135,57 @@ async fn setting_cmd(cli: &Cli, env: &mut Env, setting: &str, value: Option<&str
     Ok(())
 }
 
-/// A setting by numeric id, or by name through `set list` (case-insensitive).
+/// A console line that reports trouble: a latched fault or lockout, or
+/// fault bits (`faults=00` and `latched=0` are fine).
+fn problem_line(l: &str) -> bool {
+    l.split_whitespace().any(|tok| match tok.split_once('=') {
+        Some(("latched" | "hard_lockout" | "lockout" | "rearm_pending", v)) => v != "0",
+        Some(("faults", v)) => !v.trim_start_matches('0').is_empty(),
+        _ => false,
+    })
+}
+
+/// `set list` lines (`12 "CW SPEED WPM" 20 5..60 0`): the id named
+/// `want`, exactly or as the one name it begins; Err lists the names a
+/// prefix fits when it fits several.
+fn find_setting(lines: &[String], want: &str) -> Result<u32, Vec<String>> {
+    let rows: Vec<(u32, &str)> = lines
+        .iter()
+        .filter_map(|l| {
+            let (id, rest) = l.split_once(' ')?;
+            Some((id.parse().ok()?, rest.split('"').nth(1)?))
+        })
+        .collect();
+    if let Some((id, _)) = rows.iter().find(|(_, n)| n.eq_ignore_ascii_case(want)) {
+        return Ok(*id);
+    }
+    let want = want.to_ascii_uppercase();
+    let fits: Vec<&(u32, &str)> = rows
+        .iter()
+        .filter(|(_, n)| n.to_ascii_uppercase().starts_with(&want))
+        .collect();
+    match fits.as_slice() {
+        [(id, _)] => Ok(*id),
+        _ => Err(fits.iter().map(|(_, n)| n.to_string()).collect()),
+    }
+}
+
+/// A setting by numeric id, or by name through `set list`
+/// (case-insensitive): the exact name, else the only name it begins.
 async fn setting_id(s: &mut Sess, setting: &str, timeout: Duration) -> Result<u32, Exit> {
     if let Ok(id) = setting.parse::<u32>() {
         return Ok(id);
     }
     let lines = s.cmd("set list", timeout).await?;
-    for l in &lines {
-        // 12 "CW SPEED" 20 5..40 3
-        let Some((id, rest)) = l.split_once(' ') else { continue };
-        let Some(name) = rest.split('"').nth(1) else { continue };
-        if name.eq_ignore_ascii_case(setting) {
-            return id.parse().map_err(|_| Exit::Radio(anyhow!("bad set list line {l}")));
+    match find_setting(&lines, setting) {
+        Ok(id) => return Ok(id),
+        Err(several) if !several.is_empty() => {
+            return Err(Exit::Radio(anyhow!(
+                "{setting} could be {}: say which",
+                several.join(", ")
+            )));
         }
+        Err(_) => {}
     }
     Err(Exit::Radio(anyhow!(
         "no setting named {setting} (sctrl console set list)"
@@ -1187,6 +1204,40 @@ mod tests {
         assert_eq!(parse_freq("7.0745 MHz").unwrap(), 7_074_500);
         assert!(parse_freq("70M").is_err());
         assert!(parse_freq("abc").is_err());
+    }
+
+    #[test]
+    fn diagnose_flags_only_real_trouble() {
+        assert!(!problem_line(
+            "latched=0 hard_lockout=0 rearm_pending=0 total=266 soft=0"
+        ));
+        assert!(problem_line(
+            "latched=1 hard_lockout=0 rearm_pending=0 total=266 soft=0"
+        ));
+        assert!(problem_line("latched=0 hard_lockout=1"));
+        assert!(!problem_line("faults=00"));
+        assert!(problem_line("faults=10"));
+        assert!(!problem_line("pipeline=clean"));
+    }
+
+    #[test]
+    fn settings_by_name_or_unique_prefix() {
+        let lines: Vec<String> = [
+            r#"5 "TRANSMIT MUTE" 1 - 1"#,
+            r#"8 "CW SPEED WPM" 20 5..60 0"#,
+            r#"225 "LISTEN WPM" 20 5..60 0"#,
+            r#"226 "LISTEN TONE" 600 300..1000 0"#,
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(find_setting(&lines, "transmit mute"), Ok(5));
+        assert_eq!(find_setting(&lines, "CW SPEED"), Ok(8));
+        assert_eq!(
+            find_setting(&lines, "listen"),
+            Err(vec!["LISTEN WPM".to_string(), "LISTEN TONE".to_string()])
+        );
+        assert_eq!(find_setting(&lines, "nothing"), Err(vec![]));
     }
 
     #[test]

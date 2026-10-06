@@ -13,7 +13,7 @@ use sctrl_proto::frame::{AckCode, HostType, Input, RadioType, sub};
 use sctrl_proto::payload::{self, Ack, Hello, HostFrame, PipelineEvent, Status, TxEvent};
 use sctrl_proto::screen::Screen;
 use sctrl_proto::slip::{Decoder, Event, encode_frame};
-use sctrl_proto::spectrum::SpectrumLine;
+use sctrl_proto::spectrum::{SpectrumLine, Waterfall};
 use serde::Serialize;
 use tokio::sync::{broadcast, oneshot};
 use tokio::task::JoinHandle;
@@ -32,6 +32,8 @@ pub struct RadioState {
     /// Pipeline events as the console's `events` printed them, oldest first.
     pub events: VecDeque<(Instant, PipelineEvent)>,
     pub spectrum: Option<Arc<SpectrumLine>>,
+    /// The band's history, for drawing the screen with its waterfall.
+    pub waterfall: Waterfall,
     pub txevents: VecDeque<(Instant, TxEvent)>,
     pub stats: LinkStats,
     pub closed: Option<String>,
@@ -118,6 +120,8 @@ pub struct Link {
     pub state: Arc<Mutex<RadioState>>,
     events: broadcast::Sender<LinkEvent>,
     tasks: Vec<JoinHandle<()>>,
+    /// What the radio streams now (the last SUB).
+    opts: Mutex<LinkOptions>,
     pub port: PathBuf,
 }
 
@@ -177,6 +181,7 @@ impl Link {
             state: state.clone(),
             events: events.clone(),
             tasks: Vec::new(),
+            opts: Mutex::new(opts),
             port: port.to_path_buf(),
         };
         let mut hello_rx = events.subscribe();
@@ -390,9 +395,54 @@ impl Link {
         self.request_ok(payload::refresh(what)).await
     }
 
+    /// The screen as it is now: a full refresh asked for and waited for
+    /// (its last page carries the marker), so nothing older than the request
+    /// is in it. Needs SCREEN subscribed.
+    pub async fn fresh_screen(&self, timeout: Duration) -> Result<(Screen, Waterfall)> {
+        let before = self.state.lock().unwrap().screen.refreshes;
+        self.refresh(0x01).await?;
+        let end = Instant::now() + timeout;
+        loop {
+            {
+                let st = self.state.lock().unwrap();
+                if st.screen.refreshes != before && st.screen.known.iter().all(|k| *k) {
+                    return Ok((st.screen.clone(), st.waterfall.clone()));
+                }
+            }
+            if Instant::now() > end {
+                bail!("the screen did not arrive within {timeout:?}");
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
     pub async fn subscribe_channels(&self, opts: LinkOptions) -> Result<()> {
         self.request_ok(payload::sub(opts.sub_mask, opts.packets_per_frame, opts.status_hz))
-            .await
+            .await?;
+        *self.opts.lock().unwrap() = opts;
+        Ok(())
+    }
+
+    /// The channels the radio streams now.
+    pub fn sub_mask(&self) -> u16 {
+        self.opts.lock().unwrap().sub_mask
+    }
+
+    /// Stream `mask` from now on (nothing is sent when it already does).
+    /// The screen the host holds is stale while SCREEN was off: until the
+    /// radio's full refresh (every SUB sends one) its pages count as unknown.
+    pub async fn set_sub_mask(&self, mask: u16) -> Result<()> {
+        let opts = {
+            let o = self.opts.lock().unwrap();
+            if o.sub_mask == mask {
+                return Ok(());
+            }
+            LinkOptions { sub_mask: mask, ..*o }
+        };
+        if mask & sub::SCREEN != 0 && self.sub_mask() & sub::SCREEN == 0 {
+            self.state.lock().unwrap().screen.known = [false; sctrl_proto::screen::PAGES];
+        }
+        self.subscribe_channels(opts).await
     }
 
     /// LINK_OFF: the port is a CAT port again.
@@ -495,6 +545,7 @@ fn handle(ty: &u8, p: &[u8], shared: &Arc<Mutex<Shared>>, state: &Arc<Mutex<Radi
             let l = Arc::new(SpectrumLine::parse(p)?);
             let mut st = state.lock().unwrap();
             st.spectrum = Some(l.clone());
+            st.waterfall.push(&l);
             st.stats.spectrum_lines += 1;
             Some(LinkEvent::Spectrum(l))
         }

@@ -6,6 +6,7 @@
 //! watching. It never changes the radio's USB personality by itself and
 //! never takes a port another program holds: those wait for the user.
 
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -16,6 +17,11 @@ use crate::device::{self, Personality, UsbDevice};
 use crate::hostview::HostView;
 use crate::link::{Link, LinkError, LinkEvent, LinkOptions};
 use crate::session::port_holders_text;
+use sctrl_proto::frame::sub;
+
+/// The channels that cost the radio work per screen change: streamed only
+/// while someone looks (the window shown, a `shot` being taken).
+const SCREEN_CHANNELS: u16 = sub::SCREEN | sub::SPECTRUM | sub::SPECTRUM_TRACE;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
@@ -78,6 +84,19 @@ struct Inner {
     events: broadcast::Sender<LinkEvent>,
     serial: Option<String>,
     opts: LinkOptions,
+    /// The window shows the radio's screen.
+    screen_shown: AtomicBool,
+    /// `shot`s (and the like) waiting for a fresh screen.
+    screen_leases: AtomicUsize,
+}
+
+/// Keeps the screen streaming while held (`Service::screen_lease`).
+pub struct ScreenLease(Service);
+
+impl Drop for ScreenLease {
+    fn drop(&mut self) {
+        self.0.inner.screen_leases.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 #[derive(Clone)]
@@ -106,6 +125,8 @@ impl Service {
                 events,
                 serial,
                 opts,
+                screen_shown: AtomicBool::new(false),
+                screen_leases: AtomicUsize::new(0),
             }),
         };
         let s = svc.clone();
@@ -113,6 +134,47 @@ impl Service {
         let s = svc.clone();
         tokio::spawn(async move { s.keep_in_step().await });
         svc
+    }
+
+    /// What the radio should stream now: the screen and the spectrum only
+    /// while the window shows them or a lease is held.
+    pub fn wanted(&self) -> LinkOptions {
+        let o = self.inner.opts;
+        let look =
+            self.inner.screen_shown.load(Ordering::Relaxed) || self.inner.screen_leases.load(Ordering::Relaxed) > 0;
+        LinkOptions {
+            sub_mask: if look {
+                o.sub_mask
+            } else {
+                o.sub_mask & !SCREEN_CHANNELS
+            },
+            ..o
+        }
+    }
+
+    /// The window shows (true) or hides (shaded, minimised) the screen.
+    pub fn show_screen(&self, on: bool) {
+        if self.inner.screen_shown.swap(on, Ordering::Relaxed) != on
+            && let Some(l) = self.link()
+        {
+            let mask = self.wanted().sub_mask;
+            tokio::spawn(async move {
+                if let Err(e) = l.set_sub_mask(mask).await {
+                    tracing::warn!("SUB: {e:#}");
+                }
+            });
+        }
+    }
+
+    /// Stream the screen while the lease lives; returns once the radio has
+    /// been asked (its pages count as unknown until they arrive).
+    pub async fn screen_lease(&self) -> anyhow::Result<ScreenLease> {
+        self.inner.screen_leases.fetch_add(1, Ordering::Relaxed);
+        let lease = ScreenLease(self.clone());
+        if let Some(l) = self.link() {
+            l.set_sub_mask(self.wanted().sub_mask).await?;
+        }
+        Ok(lease)
     }
 
     /// S-CTRL's transmissions (shared by the window and `sctrl tx`).
@@ -171,6 +233,13 @@ impl Service {
                 monitor_sent = None;
                 continue;
             };
+            // A lease that ended, or a SUB that failed: the channels follow.
+            let mask = self.wanted().sub_mask;
+            if link.sub_mask() != mask
+                && let Err(e) = link.set_sub_mask(mask).await
+            {
+                tracing::warn!("SUB: {e:#}");
+            }
             let Some(st) = link.snapshot().status else { continue };
             if !st.armed() {
                 self.inner.tx.inhibit(false);
@@ -326,7 +395,7 @@ impl Service {
             return;
         }
         self.set_state(ConnState::Connecting { serial: serial.clone() });
-        match Link::connect(&port, self.inner.opts).await {
+        match Link::connect(&port, self.wanted()).await {
             Ok(link) => {
                 let link = Arc::new(link);
                 link.spawn_event_reader();

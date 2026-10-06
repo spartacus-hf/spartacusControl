@@ -21,12 +21,12 @@
 //!   VOX on, anything played there transmits). A stream from a program that
 //!   is not a digital-mode program is moved off it at once, and the radio's
 //!   sink is never left the default output.
-//! - The WirePlumber rule (installed only on request) keeps the radio's
-//!   nodes from ever becoming defaults, names them clearly, and keeps them
-//!   from suspending.
+//! - Nothing is configured on the system: no WirePlumber rule, no files.
+//!   One trade-off of that: the radio's capture outranks the PC's output as
+//!   the graph's clock, so when the PC speaker starts, sound already playing
+//!   on that output may click once as it follows the radio.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -368,8 +368,6 @@ pub struct AudioStatus {
     pub monitor_ok: bool,
     /// Other programs recording from the radio.
     pub recorders: Vec<String>,
-    /// The WirePlumber rule is in effect on the radio's nodes.
-    pub rule_active: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -660,15 +658,6 @@ impl AudioService {
                     recorders.join(", ")
                 ));
             }
-            // Without the rule the radio outranks the PC's own output as the
-            // graph's clock: when the loopback joins them, the PC's output
-            // follows the radio, and sound already playing there clicks once.
-            let rule_active = source
-                .as_ref()
-                .is_some_and(|n| u(n.props.get("priority.driver")) == Some(1));
-            if playing && !rule_active {
-                notes.push(if wp_rule_installed() { RULE_PENDING } else { RULE_NOTE }.into());
-            }
             let mut stat = self.inner.status.lock().unwrap();
             *stat = AudioStatus {
                 pipewire,
@@ -686,7 +675,6 @@ impl AudioService {
                 notes,
                 monitor_ok: playing && recorders.is_empty(),
                 recorders,
-                rule_active,
             };
         }
     }
@@ -741,71 +729,6 @@ pub async fn graph_once() -> Result<Graph> {
         g.apply(o);
     }
     Ok(g)
-}
-
-// ---- the WirePlumber rule ----
-
-pub fn wp_rule_path() -> PathBuf {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config"));
-    base.join("wireplumber/wireplumber.conf.d/60-spartacus.conf")
-}
-
-pub const WP_RULE: &str = r#"# S-CTRL: the Chireix SPARTACUS REV1's sound card.
-# - never the default input or output: its playback is the radio's TX audio,
-#   and system sounds must never reach a transmitter;
-# - never the clock of the PC's other audio (priority.driver): when S-CTRL's
-#   PC speaker joins the radio to the PC's output, the PC's output stays the
-#   driver and the radio follows, so nothing already playing glitches;
-# - clear names instead of the USB descriptor's "Virtual COM Port";
-# - no suspend: the capture stays continuous for WSJT-X and the radio's
-#   host-stream checks.
-monitor.alsa.rules = [
-  {
-    matches = [ { node.name = "~alsa_output.usb-Chireix_SPARTACUS_REV1*" } ]
-    actions = {
-      update-props = {
-        priority.session = 1
-        priority.driver = 1
-        node.description = "SPARTACUS TX audio (to the radio)"
-        node.nick = "SPARTACUS TX"
-        session.suspend-timeout-seconds = 0
-      }
-    }
-  }
-  {
-    matches = [ { node.name = "~alsa_input.usb-Chireix_SPARTACUS_REV1*" } ]
-    actions = {
-      update-props = {
-        priority.session = 1
-        priority.driver = 1
-        node.description = "SPARTACUS RX audio"
-        node.nick = "SPARTACUS RX"
-        session.suspend-timeout-seconds = 0
-      }
-    }
-  }
-]
-"#;
-
-/// The status note while the PC speaker plays without the WirePlumber rule.
-pub const RULE_NOTE: &str = "the radio is this PC's audio clock while the PC speaker plays (other sound may click once as it starts): the audio rule keeps the PC's own output as the clock";
-/// The rule is written but WirePlumber has not read it yet.
-pub const RULE_PENDING: &str = "the audio rule takes effect when WirePlumber restarts (`systemctl --user restart wireplumber`: a second of silence for all audio) or at the next login";
-
-pub fn wp_rule_installed() -> bool {
-    std::fs::read_to_string(wp_rule_path()).is_ok_and(|s| s == WP_RULE)
-}
-
-/// Write the rule. It applies when WirePlumber restarts or the radio is
-/// plugged in again; restarting WirePlumber interrupts all audio briefly,
-/// so that is left to the user.
-pub fn install_wp_rule() -> Result<PathBuf> {
-    let p = wp_rule_path();
-    std::fs::create_dir_all(p.parent().unwrap())?;
-    std::fs::write(&p, WP_RULE)?;
-    Ok(p)
 }
 
 #[cfg(test)]

@@ -11,6 +11,7 @@ use sctrl_proto::payload::{Status, tx_owner_name};
 
 use super::actions::Actions;
 use super::skin;
+use super::txwin::TxWin;
 use crate::cli::{fmt_hz, ref_name};
 
 /// One setting as `set list` gives it.
@@ -29,6 +30,8 @@ pub struct Companions {
     settings: bool,
     console: bool,
     cw: bool,
+    tx: bool,
+    txwin: TxWin,
     /// Console window: the log and the line being typed.
     log: Arc<Mutex<Vec<String>>>,
     line: String,
@@ -61,11 +64,13 @@ const DIAG_COMMANDS: [&str; 16] = [
 impl Companions {
     pub fn new(act: Actions) -> Self {
         Self {
+            txwin: TxWin::new(act.clone()),
             act,
             diag: false,
             settings: false,
             console: false,
             cw: false,
+            tx: false,
             log: Arc::new(Mutex::new(Vec::new())),
             line: String::new(),
             diag_out: Arc::new(Mutex::new((String::new(), Vec::new()))),
@@ -82,6 +87,8 @@ impl Companions {
         }
         ui.toggle_value(&mut self.cw, "CW");
         ui.toggle_value(&mut self.console, "CON");
+        ui.toggle_value(&mut self.tx, RichText::new("TX").color(skin::WARN))
+            .on_hover_text("S-CTRL's own transmissions: ARM, TUNE, the paddle, CW memories, STOP");
     }
 
     fn run_cmd(&self, line: String, out: Arc<Mutex<(String, Vec<String>)>>) {
@@ -100,7 +107,7 @@ impl Companions {
                 Err(e) => vec![format!("ERR {e:#}")],
             };
             *out.lock().unwrap() = (line, lines);
-            act.toast("", false);
+            act.repaint();
         });
     }
 
@@ -184,6 +191,25 @@ impl Companions {
                 },
             );
             self.console = open;
+        }
+        if self.tx {
+            let mut open = true;
+            ctx.show_viewport_immediate(
+                ViewportId::from_hash_of("tx"),
+                builder("S-CTRL TX", [560.0, 640.0]),
+                |ui, _| {
+                    if ui.ctx().input(|i| i.viewport().close_requested()) {
+                        open = false;
+                    }
+                    egui::CentralPanel::default().show(ui, |ui| {
+                        egui::ScrollArea::vertical().show(ui, |ui| self.txwin.ui(ui, st));
+                    });
+                },
+            );
+            self.tx = open;
+        }
+        if !self.tx {
+            self.txwin.release();
         }
         if self.cw {
             let mut open = true;
@@ -377,7 +403,7 @@ impl Companions {
                             Err(e) => vec![format!("ERR {e:#}")],
                         };
                         log.lock().unwrap().extend(out);
-                        act.toast("", false);
+                        act.repaint();
                     });
                 }
                 r.request_focus();
@@ -403,6 +429,12 @@ impl Companions {
             .link()
             .map(|l| l.state.lock().unwrap().cw_text.clone())
             .unwrap_or_default();
+        if text.is_empty() {
+            ui.label(
+                RichText::new("nothing decoded yet: the radio's CW decoder text appears here (CW mode)")
+                    .color(skin::MUTED),
+            );
+        }
         egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
             ui.add(egui::Label::new(RichText::new(text).monospace().size(18.0).color(skin::FREQ)).selectable(true));
         });
