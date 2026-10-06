@@ -230,7 +230,7 @@ impl Companions {
                             },
                         ),
                         ("overruns", s.rx_overruns.to_string()),
-                        ("capture gaps", s.cap_gaps.to_string()),
+                        ("capture gaps", format!("{} /10 min", s.cap_gaps)),
                         ("USB RAW IQ", if s.usb_iq() { "on" } else { "off" }.into()),
                         ("USB VOX", if s.usb_vox() { "on" } else { "off" }.into()),
                         ("TX MUTE", if s.tx_mute() { "on" } else { "off" }.into()),

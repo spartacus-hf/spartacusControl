@@ -365,7 +365,7 @@ pub fn status_json(s: &Status) -> serde_json::Value {
         "keyer_cannot_radiate": s.keyer_cannot_radiate(), "wpm": s.wpm,
         "cat_ports_open": s.cat_ports_open(), "console_port": s.console_port(),
         "cat0_age_s": (s.cat0_age_ds != 0xFFFF).then(|| s.cat0_age_ds as f32 / 10.0),
-        "rx_overruns": s.rx_overruns, "capture_gaps": s.cap_gaps,
+        "rx_overruns": s.rx_overruns, "capture_gaps_10min": s.cap_gaps,
         "ref": ref_name(s.ref_state), "ref_ppm": s.ref_ppm_x100 as f32 / 100.0,
         "band": s.band, "uptime_ms": s.uptime_ms, "settings_hash": format!("{:08x}", s.settings_hash),
     })
@@ -414,7 +414,7 @@ fn status_lines(dev: &UsbDevice, l: &Link, s: &Status, host: &HostView, cx: &Con
     ];
     let faults = s.fault_names();
     v.push(format!(
-        "faults {}  lockout {}  overruns {}  capture gaps {}{}",
+        "faults {}  lockout {}  overruns {}  capture gaps {}/10 min{}",
         if faults.is_empty() {
             "none".into()
         } else {

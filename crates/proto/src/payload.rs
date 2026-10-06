@@ -156,6 +156,7 @@ pub struct Status {
     pub settings_hash: u32,
     pub pd_mv: u16,
     pub rx_overruns: u16,
+    /// USB capture gaps the host heard in the last 10 minutes (the DIGI page's GAPS).
     pub cap_gaps: u16,
     pub ref_state: u8,
     pub link: u8,

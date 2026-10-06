@@ -123,7 +123,7 @@ nothing else is.
 | 32 | u32 | settings hash (changes when any setting value changes) |
 | 36 | u16 | USB-PD contract mV (0 none) |
 | 38 | u16 | receive overruns (low 16 bits, wraps) |
-| 40 | u16 | USB capture gaps, padded + dropped frames (low 16 bits, wraps) |
+| 40 | u16 | USB capture gaps the host heard in the last 10 minutes, as the DIGI page's GAPS counts them (a loss counts once the host has pulled 20 ms past it; the overflow a stopping host leaves behind is not a gap) |
 | 42 | u8 | reference discipline: 0 idle, 1 acquiring, 2 locked |
 | 43 | u8 | link: bit 0 heartbeat ok, bit 1 host subscribed to SCREEN |
 | 44 | i16 | reference trim ppm x 100 |
