@@ -43,6 +43,10 @@ pub struct Cli {
     /// Open the radio directly even if an S-CTRL is running (it will refuse: the port is held).
     #[arg(long, global = true)]
     pub direct: bool,
+    /// The directory of the shell a forwarded command came from: its files
+    /// (`shot -o`, `sd get`) are relative to it, not to the running S-CTRL's.
+    #[arg(long, global = true, hide = true)]
+    pub here: Option<PathBuf>,
     #[command(subcommand)]
     pub cmd: Option<Cmd>,
 }
@@ -493,6 +497,14 @@ fn status_lines(dev: &UsbDevice, l: &Link, s: &Status, host: &HostView, cx: &Con
 }
 
 /// Run one command. `Gui` and `Daemon` are handled by main.
+/// A file the command writes, where its caller is (`--here`).
+fn here(cli: &Cli, path: PathBuf) -> PathBuf {
+    match &cli.here {
+        Some(dir) => dir.join(path),
+        None => path,
+    }
+}
+
 pub async fn run(cli: &Cli, env: &mut Env) -> Result<(), Exit> {
     let timeout = Duration::from_secs_f64(cli.timeout);
     let Some(cmd) = cli.cmd.clone() else { return Ok(()) };
@@ -593,6 +605,7 @@ pub async fn run(cli: &Cli, env: &mut Env) -> Result<(), Exit> {
             Ok(())
         }
         Cmd::Shot { out, scale } => {
+            let out = here(cli, out);
             let dev = env.device(cli.serial.as_deref())?;
             let s = env.open(&dev).await?;
             let l = s.need_link()?;
@@ -766,6 +779,7 @@ pub async fn run(cli: &Cli, env: &mut Env) -> Result<(), Exit> {
         Cmd::Tx { what } => crate::tx_cli::run(cli, env, what).await,
         Cmd::Goto { page } => crate::tx_cli::goto(cli, env, &page).await,
         Cmd::Sd { what, path, out } => {
+            let out = out.map(|o| here(cli, o));
             let dev = env.device(cli.serial.as_deref())?;
             let s = env.open(&dev).await?;
             let l = s.need_link()?;
@@ -785,7 +799,7 @@ pub async fn run(cli: &Cli, env: &mut Env) -> Result<(), Exit> {
                         }
                     }
                 }),
-                "get" if !path.is_empty() && out.is_none() && std::path::Path::new(&name).exists() => {
+                "get" if !path.is_empty() && out.is_none() && here(cli, name.clone().into()).exists() => {
                     // Only an explicit -o replaces a file.
                     Err(anyhow!(
                         "{name} exists here: -o <file> to replace it or to save elsewhere"
@@ -803,7 +817,7 @@ pub async fn run(cli: &Cli, env: &mut Env) -> Result<(), Exit> {
                         eprintln!();
                     }
                     data.and_then(|d| {
-                        let to = out.unwrap_or_else(|| name.into());
+                        let to = out.unwrap_or_else(|| here(cli, name.into()));
                         std::fs::write(&to, &d).map_err(|e| anyhow!("{}: {e}", to.display()))?;
                         env.say(if cli.json {
                             json!({"ok": true, "file": to, "bytes": d.len()}).to_string()
@@ -1269,6 +1283,24 @@ mod tests {
         assert_eq!(parse_freq("7.0745 MHz").unwrap(), 7_074_500);
         assert!(parse_freq("70M").is_err());
         assert!(parse_freq("abc").is_err());
+    }
+
+    #[test]
+    fn forwarded_files_go_where_the_caller_is() {
+        // main.rs puts `--here <dir>` first; a console line keeps its words.
+        let cli = Cli::try_parse_from(["sctrl", "--here", "/home/a", "shot", "-o", "s.png"]).unwrap();
+        let Some(Cmd::Shot { out, .. }) = cli.cmd.clone() else {
+            panic!()
+        };
+        assert_eq!(here(&cli, out), PathBuf::from("/home/a/s.png"));
+        assert_eq!(here(&cli, "/tmp/x.png".into()), PathBuf::from("/tmp/x.png"));
+        let cli = Cli::try_parse_from(["sctrl", "--here", "/home/a", "console", "set", "get", "38"]).unwrap();
+        let Some(Cmd::Console { line }) = cli.cmd.clone() else {
+            panic!()
+        };
+        assert_eq!(line, ["set", "get", "38"]);
+        let cli = Cli::try_parse_from(["sctrl", "shot"]).unwrap();
+        assert_eq!(here(&cli, "s.png".into()), PathBuf::from("s.png"));
     }
 
     #[test]

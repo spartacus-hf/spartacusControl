@@ -30,8 +30,14 @@ fn main() {
         None | Some(Cmd::Gui) => gui::run(cli.serial.clone(), rt),
         Some(Cmd::Daemon) => rt.block_on(daemon(cli.serial.clone())),
         Some(_) => rt.block_on(async {
+            // Its files go where this shell is, not where the window started.
+            let mut fwd: Vec<String> = match std::env::current_dir().ok().and_then(|d| d.to_str().map(String::from)) {
+                Some(dir) => vec!["--here".into(), dir],
+                None => Vec::new(),
+            };
+            fwd.extend_from_slice(&argv[1..]);
             if !cli.direct
-                && let Some(code) = ipc::forward(argv[1..].to_vec(), env!("SCTRL_BUILD_ID")).await
+                && let Some(code) = ipc::forward(fwd, env!("SCTRL_BUILD_ID")).await
             {
                 return code;
             }
