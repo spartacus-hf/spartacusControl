@@ -1,0 +1,22 @@
+[workspace]
+resolver = "3"
+members = ["crates/proto", "crates/core", "crates/sctrl"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "LicenseRef-Proprietary"
+repository = "https://github.com/vpcsln/spartacusControl"
+authors = ["caslan"]
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+debug = 1
