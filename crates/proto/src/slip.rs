@@ -159,13 +159,7 @@ mod tests {
         d.feed(&wire, &mut ev);
         let frames: Vec<_> = ev
             .into_iter()
-            .filter_map(|e| {
-                if let Event::Frame(f) = e {
-                    Some(f)
-                } else {
-                    None
-                }
-            })
+            .filter_map(|e| if let Event::Frame(f) = e { Some(f) } else { None })
             .collect();
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].ty, 0x08);

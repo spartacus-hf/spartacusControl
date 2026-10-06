@@ -26,10 +26,7 @@ impl<'a> Rd<'a> {
     fn u16(&mut self) -> Option<u16> {
         self.need(2)?;
         self.at += 2;
-        Some(u16::from_le_bytes([
-            self.b[self.at - 2],
-            self.b[self.at - 1],
-        ]))
+        Some(u16::from_le_bytes([self.b[self.at - 2], self.b[self.at - 1]]))
     }
     fn i16(&mut self) -> Option<i16> {
         self.u16().map(|v| v as i16)
@@ -369,10 +366,7 @@ impl TxEvent {
         let mut r = Rd::new(p);
         let kind = r.u8()?;
         let _ = r.u8()?;
-        Some(Self {
-            kind,
-            detail: r.u16()?,
-        })
+        Some(Self { kind, detail: r.u16()? })
     }
     pub fn kind(&self) -> Option<TxEventKind> {
         TxEventKind::from_u8(self.kind)
@@ -436,12 +430,7 @@ pub fn tx_arm(on: bool, key_max_ms: u32, mem_max_s: u32, ttl_s: u32) -> HostFram
     let kd = key_max_ms.div_ceil(100).clamp(1, 255) as u8;
     (
         HostType::TxArm,
-        vec![
-            on as u8,
-            kd,
-            mem_max_s.clamp(1, 255) as u8,
-            ttl_s.clamp(5, 255) as u8,
-        ],
+        vec![on as u8, kd, mem_max_s.clamp(1, 255) as u8, ttl_s.clamp(5, 255) as u8],
     )
 }
 
@@ -460,13 +449,11 @@ pub fn memsend(text: &str) -> Option<HostFrame> {
 
 /// None when the line cannot be sent (too long for the console, or has a line end).
 pub fn cmd(line: &str) -> Option<HostFrame> {
-    (line.len() <= 120 && !line.contains(['\r', '\n']))
-        .then(|| (HostType::Cmd, line.as_bytes().to_vec()))
+    (line.len() <= 120 && !line.contains(['\r', '\n'])).then(|| (HostType::Cmd, line.as_bytes().to_vec()))
 }
 
 pub fn cat(command: &str) -> Option<HostFrame> {
-    (command.len() <= 48 && command.is_ascii())
-        .then(|| (HostType::Cat, command.as_bytes().to_vec()))
+    (command.len() <= 48 && command.is_ascii()).then(|| (HostType::Cat, command.as_bytes().to_vec()))
 }
 
 pub fn getval(ids: &[u8]) -> HostFrame {
@@ -474,10 +461,7 @@ pub fn getval(ids: &[u8]) -> HostFrame {
 }
 
 pub fn monitor(mix: bool, phones_off: bool, gain: u8) -> HostFrame {
-    (
-        HostType::Monitor,
-        vec![(mix as u8) | ((phones_off as u8) << 1), gain],
-    )
+    (HostType::Monitor, vec![(mix as u8) | ((phones_off as u8) << 1), gain])
 }
 
 pub fn link_off() -> HostFrame {

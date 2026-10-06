@@ -143,10 +143,7 @@ fn read_hex(p: &Path) -> Option<u16> {
 
 /// The firmware's serial: Get_SerialNum, 12 upper-case hex digits.
 fn spartacus_serial(serial: &str) -> bool {
-    serial.len() == 12
-        && serial
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'A'..=b'F').contains(&b))
+    serial.len() == 12 && serial.bytes().all(|b| b.is_ascii_digit() || (b'A'..=b'F').contains(&b))
 }
 
 pub fn classify(vid: u16, pid: u16, manufacturer: &str, product: &str, serial: &str) -> Kind {
@@ -168,9 +165,7 @@ pub fn classify(vid: u16, pid: u16, manufacturer: &str, product: &str, serial: &
         };
     }
     match (vid, pid) {
-        (VID_ST, PID_STLINK_V2) | (VID_ST, 0x374B) | (VID_ST, 0x374E) | (VID_ST, 0x374F) => {
-            Kind::StLink
-        }
+        (VID_ST, PID_STLINK_V2) | (VID_ST, 0x374B) | (VID_ST, 0x374E) | (VID_ST, 0x374F) => Kind::StLink,
         (VID_ST, PID_DFU) => Kind::StDfu,
         _ => Kind::Other,
     }
@@ -193,10 +188,7 @@ pub fn scan_at(root: &Path) -> Vec<UsbDevice> {
         if name.contains(':') || name.starts_with("usb") {
             continue;
         }
-        let (Some(vid), Some(pid)) = (
-            read_hex(&dir.join("idVendor")),
-            read_hex(&dir.join("idProduct")),
-        ) else {
+        let (Some(vid), Some(pid)) = (read_hex(&dir.join("idVendor")), read_hex(&dir.join("idProduct"))) else {
             continue;
         };
         let manufacturer = read_trim(&dir.join("manufacturer")).unwrap_or_default();
@@ -292,25 +284,13 @@ mod tests {
             }
         );
         assert_eq!(
-            sp(
-                0x0483,
-                0x5742,
-                "Chireix",
-                "SPARTACUS REV1 DIAG",
-                "205D36864D32"
-            ),
+            sp(0x0483, 0x5742, "Chireix", "SPARTACUS REV1 DIAG", "205D36864D32"),
             Kind::Spartacus {
                 personality: Personality::Diag
             }
         );
         assert_eq!(
-            sp(
-                0x0483,
-                0x5741,
-                "Chireix",
-                "Chireix TX SD Disk",
-                "205D36864D32"
-            ),
+            sp(0x0483, 0x5741, "Chireix", "Chireix TX SD Disk", "205D36864D32"),
             Kind::Spartacus {
                 personality: Personality::Disk
             }
@@ -350,13 +330,7 @@ mod tests {
             Kind::UnknownChireix
         );
         assert_eq!(
-            sp(
-                0x0483,
-                0x5740,
-                "STMicroelectronics",
-                "SPARTACUS REV1",
-                "205D36864D32"
-            ),
+            sp(0x0483, 0x5740, "STMicroelectronics", "SPARTACUS REV1", "205D36864D32"),
             Kind::Other
         );
         assert_eq!(
@@ -407,10 +381,7 @@ mod tests {
         assert_eq!(sp.sound_card, Some(3));
         assert_eq!(
             sp.ttys,
-            vec![
-                (3, PathBuf::from("/dev/ttyACM1")),
-                (5, PathBuf::from("/dev/ttyACM2"))
-            ]
+            vec![(3, PathBuf::from("/dev/ttyACM1")), (5, PathBuf::from("/dev/ttyACM2"))]
         );
         // by-id when this machine happens to have one for that tty, the tty itself otherwise
         let lp = sp.link_port().unwrap().to_string_lossy().into_owned();

@@ -14,6 +14,6 @@ image = { version = "0.25.10", default-features = false, features = ["png"] }
 sctrl-core = { version = "0.1.0", path = "../core" }
 sctrl-proto = { version = "0.1.0", path = "../proto" }
 serde_json = "1.0.151"
-tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "time", "sync", "io-util", "net"] }
+tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "time", "sync", "io-util", "net", "signal"] }
 tracing = "0.1.44"
-tracing-subscriber = "0.3.23"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

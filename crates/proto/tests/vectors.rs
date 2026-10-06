@@ -16,10 +16,7 @@ fn unhex(s: &str) -> Vec<u8> {
 }
 
 fn vectors() -> Vec<Vec<String>> {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/fixtures/link_vectors.txt"
-    );
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/link_vectors.txt");
     std::fs::read_to_string(path)
         .expect("tests/fixtures/link_vectors.txt")
         .lines()
@@ -45,10 +42,7 @@ fn every_vector_agrees() {
     for f in &v {
         *seen.entry(f[0].as_str()).or_default() += 1;
         match f[0].as_str() {
-            "crc" => assert_eq!(
-                crc::crc16(&unhex(&f[1])),
-                u16::from_str_radix(&f[2], 16).unwrap()
-            ),
+            "crc" => assert_eq!(crc::crc16(&unhex(&f[1])), u16::from_str_radix(&f[2], 16).unwrap()),
             "frame" => {
                 let (ty, seq) = (
                     u8::from_str_radix(&f[2], 16).unwrap(),
@@ -58,12 +52,7 @@ fn every_vector_agrees() {
                 let wire = unhex(&f[5]);
                 assert_eq!(encode_frame(ty, seq, &payload), wire, "encode {}", f[1]);
                 let got = decode_one(&wire);
-                assert_eq!(
-                    (got.ty, got.seq, got.payload),
-                    (ty, seq, payload),
-                    "decode {}",
-                    f[1]
-                );
+                assert_eq!((got.ty, got.seq, got.payload), (ty, seq, payload), "decode {}", f[1]);
             }
             "rle" => {
                 let raw = unhex(&f[2]);
@@ -96,9 +85,6 @@ fn every_vector_agrees() {
         }
     }
     for kind in ["crc", "frame", "rle", "hostframe", "status"] {
-        assert!(
-            seen.get(kind).copied().unwrap_or(0) > 0,
-            "no {kind} vectors"
-        );
+        assert!(seen.get(kind).copied().unwrap_or(0) > 0, "no {kind} vectors");
     }
 }

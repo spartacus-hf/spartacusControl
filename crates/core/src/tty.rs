@@ -47,9 +47,7 @@ impl Tty {
     pub async fn read(&self, buf: &mut [u8]) -> Result<usize> {
         loop {
             let mut guard = self.fd.readable().await?;
-            match guard.try_io(|inner| {
-                nix::unistd::read(inner.get_ref().as_fd(), buf).map_err(std::io::Error::from)
-            }) {
+            match guard.try_io(|inner| nix::unistd::read(inner.get_ref().as_fd(), buf).map_err(std::io::Error::from)) {
                 Ok(Ok(0)) => anyhow::bail!("port closed (device gone)"),
                 Ok(Ok(n)) => return Ok(n),
                 Ok(Err(e)) => return Err(e).context("read"),
@@ -61,9 +59,7 @@ impl Tty {
     pub async fn write_all(&self, mut data: &[u8]) -> Result<()> {
         while !data.is_empty() {
             let mut guard = self.fd.writable().await?;
-            match guard.try_io(|inner| {
-                nix::unistd::write(inner.get_ref(), data).map_err(std::io::Error::from)
-            }) {
+            match guard.try_io(|inner| nix::unistd::write(inner.get_ref(), data).map_err(std::io::Error::from)) {
                 Ok(Ok(n)) => data = &data[n..],
                 Ok(Err(e)) => return Err(e).context("write"),
                 Err(_would_block) => continue,

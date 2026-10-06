@@ -146,7 +146,8 @@ pub fn radio_apps() -> Vec<Running> {
             .map(|s| s.trim().to_string())
             .unwrap_or_default();
         let joined = argv.join(" ");
-        if let Some(app) = RadioApp::classify(&name, &argv0, &joined) {
+        // Other S-CTRL processes (clients of this one) are not radio programs.
+        if let Some(app) = RadioApp::classify(&name, &argv0, &joined).filter(|a| *a != RadioApp::Sctrl) {
             let rig_name = argv
                 .iter()
                 .find_map(|a| a.strip_prefix("--rig-name=").map(str::to_owned));
@@ -178,11 +179,10 @@ pub fn holders(path: &Path) -> Vec<Proc> {
         let Ok(fds) = fs::read_dir(format!("/proc/{pid}/fd")) else {
             continue;
         };
-        if fds.flatten().any(|fd| {
-            fs::read_link(fd.path())
-                .map(|l| l == target)
-                .unwrap_or(false)
-        }) && let Some(p) = proc_of(pid)
+        if fds
+            .flatten()
+            .any(|fd| fs::read_link(fd.path()).map(|l| l == target).unwrap_or(false))
+            && let Some(p) = proc_of(pid)
         {
             out.push(p);
         }
@@ -204,10 +204,7 @@ mod tests {
             RadioApp::classify("python3", "python3", "python3 tools/rev1_diag.py term"),
             Some(RadioApp::Rev1Diag)
         );
-        assert_eq!(
-            RadioApp::classify("gqrx", "gqrx", "gqrx -c x"),
-            Some(RadioApp::Gqrx)
-        );
+        assert_eq!(RadioApp::classify("gqrx", "gqrx", "gqrx -c x"), Some(RadioApp::Gqrx));
         assert_eq!(RadioApp::classify("bash", "/bin/bash", "bash"), None);
     }
 

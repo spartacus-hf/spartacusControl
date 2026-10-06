@@ -15,8 +15,8 @@ pub const PAGE_BYTES: usize = W + TCOLS;
 
 /// `ui_gfx.c` palette as RGB565 (index = GFX_* colour).
 pub const PALETTE_565: [u16; 16] = [
-    0x0000, 0x00E2, 0x01A4, 0x0347, 0xE7FD, 0x6712, 0x2D0C, 0x075C, 0x02CB, 0x4FEF, 0x378C, 0xFE20,
-    0xFA06, 0x8000, 0x0284, 0xFFFF,
+    0x0000, 0x00E2, 0x01A4, 0x0347, 0xE7FD, 0x6712, 0x2D0C, 0x075C, 0x02CB, 0x4FEF, 0x378C, 0xFE20, 0xFA06, 0x8000,
+    0x0284, 0xFFFF,
 ];
 
 /// RGB565 expanded to 8 bits per channel the usual way (bit replication).
@@ -24,11 +24,7 @@ pub fn rgb565_to_rgb(c: u16) -> [u8; 3] {
     let r = ((c >> 11) & 0x1F) as u8;
     let g = ((c >> 5) & 0x3F) as u8;
     let b = (c & 0x1F) as u8;
-    [
-        (r << 3) | (r >> 2),
-        (g << 2) | (g >> 4),
-        (b << 3) | (b >> 2),
-    ]
+    [(r << 3) | (r >> 2), (g << 2) | (g >> 4), (b << 3) | (b >> 2)]
 }
 
 #[derive(Clone)]

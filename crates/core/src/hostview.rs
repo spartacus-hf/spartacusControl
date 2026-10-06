@@ -54,9 +54,7 @@ impl HostView {
             return Some(r.app.name().to_string());
         }
         match cat0_age_ds {
-            Some(age) if age < 300 => {
-                Some("a CAT program on port 0 (commands in the last 30 s)".into())
-            }
+            Some(age) if age < 300 => Some("a CAT program on port 0 (commands in the last 30 s)".into()),
             _ => None,
         }
     }

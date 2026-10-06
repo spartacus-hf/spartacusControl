@@ -29,9 +29,7 @@ impl TextConsole {
         if line.contains(['\r', '\n']) || line.len() > 120 {
             bail!("console line too long or not one line");
         }
-        self.tty
-            .write_all(format!("{}\n", line.trim()).as_bytes())
-            .await?;
+        self.tty.write_all(format!("{}\n", line.trim()).as_bytes()).await?;
         let deadline = Instant::now() + timeout;
         let mut lines = Vec::new();
         loop {
@@ -75,9 +73,6 @@ pub fn fields(lines: &[String]) -> Vec<(String, String)> {
     lines
         .iter()
         .flat_map(|l| l.split_whitespace())
-        .filter_map(|t| {
-            t.split_once('=')
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-        })
+        .filter_map(|t| t.split_once('=').map(|(k, v)| (k.to_string(), v.to_string())))
         .collect()
 }

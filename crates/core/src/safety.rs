@@ -99,18 +99,12 @@ pub fn decide(action: Action, cx: &Context) -> Result<(), Denied> {
     }
     // R3: a CAT program shares the radio.
     if let Some(prog) = &cx.cat_program {
-        if matches!(
-            action,
-            Tune | Mode | Band | IqSetting | AudioPathSetting | Personality
-        ) {
+        if matches!(action, Tune | Mode | Band | IqSetting | AudioPathSetting | Personality) {
             if cx.cat_program_tx {
                 return deny("R3", format!("{prog} is transmitting or has TX enabled"));
             }
             if !cx.took_control {
-                return deny(
-                    "R3",
-                    format!("{prog} controls the radio; take control first"),
-                );
+                return deny("R3", format!("{prog} controls the radio; take control first"));
             }
         }
         if action == Transmit {
@@ -153,10 +147,7 @@ pub fn decide(action: Action, cx: &Context) -> Result<(), Denied> {
         && let Some(s) = &cx.status
     {
         if s.usb_iq() {
-            return deny(
-                "R6",
-                "the radio sends raw I/Q on USB: there is no audio to play",
-            );
+            return deny("R6", "the radio sends raw I/Q on USB: there is no audio to play");
         }
         if s.diag_personality() {
             return deny("R6", "DIAG personality: no sound card");
@@ -240,10 +231,7 @@ mod tests {
     #[test]
     fn transmit_needs_everything_in_order() {
         let mut c = cx(1);
-        assert_eq!(
-            decide(Action::Transmit, &c).unwrap_err().reason,
-            "TX is not armed"
-        );
+        assert_eq!(decide(Action::Transmit, &c).unwrap_err().reason, "TX is not armed");
         c.armed = true;
         assert_eq!(decide(Action::Transmit, &c), Ok(()));
         c.link_live = false;
@@ -255,12 +243,7 @@ mod tests {
         assert_eq!(decide(Action::Transmit, &c).unwrap_err().rule, "R5");
         c.status.as_mut().unwrap().flags1 = 0;
         c.status.as_mut().unwrap().faults = 0x10;
-        assert!(
-            decide(Action::Transmit, &c)
-                .unwrap_err()
-                .reason
-                .contains("SWR")
-        );
+        assert!(decide(Action::Transmit, &c).unwrap_err().reason.contains("SWR"));
     }
 
     #[test]

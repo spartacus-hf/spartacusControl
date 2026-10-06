@@ -146,9 +146,7 @@ impl AckCode {
             Ok => "done",
             BusyTx => "refused: the radio is transmitting",
             BusyOwner => "refused: another program or the radio's own key is transmitting",
-            BusyRt => {
-                "not now: the radio's audio is realtime-critical (keyed CW or a TX stream); retry in receive"
-            }
+            BusyRt => "not now: the radio's audio is realtime-critical (keyed CW or a TX stream); retry in receive",
             NotArmed => "refused: TX is not armed",
             Fault => "refused: a fault or lockout is latched on the radio",
             Bad => "refused: malformed request",

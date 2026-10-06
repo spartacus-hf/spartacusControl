@@ -180,15 +180,10 @@ impl Link {
             port: port.to_path_buf(),
         };
         let mut hello_rx = events.subscribe();
-        link.tasks
-            .push(tokio::spawn(reader(tty, rest, shared, state, events)));
+        link.tasks.push(tokio::spawn(reader(tty, rest, shared, state, events)));
         link.send(payload::heartbeat(0)).await?;
-        link.send(payload::sub(
-            opts.sub_mask,
-            opts.packets_per_frame,
-            opts.status_hz,
-        ))
-        .await?;
+        link.send(payload::sub(opts.sub_mask, opts.packets_per_frame, opts.status_hz))
+            .await?;
         let wait_hello = async {
             loop {
                 match hello_rx.recv().await {
@@ -222,11 +217,7 @@ impl Link {
                 }
                 let ms = (start.elapsed().as_millis() & 0xFFFF) as u16;
                 let (ty, p) = payload::heartbeat(ms);
-                if tty
-                    .write_all(&encode_frame(ty as u8, seq, &p))
-                    .await
-                    .is_err()
-                {
+                if tty.write_all(&encode_frame(ty as u8, seq, &p)).await.is_err() {
                     return;
                 }
                 seq = seq.wrapping_add(1) | 0x80;
@@ -295,8 +286,7 @@ impl Link {
     /// waits while the radio is realtime-critical (keyed CW, TX streams):
     /// give long timeouts while transmitting.
     pub async fn cmd(&self, line: &str, timeout: Duration) -> Result<Vec<String>> {
-        let frame =
-            payload::cmd(line).ok_or_else(|| anyhow!("console line too long or not one line"))?;
+        let frame = payload::cmd(line).ok_or_else(|| anyhow!("console line too long or not one line"))?;
         let _c = self.console_lock.lock().await;
         let (tx, rx) = oneshot::channel();
         self.shared.lock().unwrap().console = Some(ConsoleWaiter {
@@ -341,12 +331,8 @@ impl Link {
     }
 
     pub async fn subscribe_channels(&self, opts: LinkOptions) -> Result<()> {
-        self.request_ok(payload::sub(
-            opts.sub_mask,
-            opts.packets_per_frame,
-            opts.status_hz,
-        ))
-        .await
+        self.request_ok(payload::sub(opts.sub_mask, opts.packets_per_frame, opts.status_hz))
+            .await
     }
 
     /// LINK_OFF: the port is a CAT port again.
@@ -424,12 +410,7 @@ fn fail_waiters(shared: &Arc<Mutex<Shared>>, why: &str) {
     }
 }
 
-fn handle(
-    ty: &u8,
-    p: &[u8],
-    shared: &Arc<Mutex<Shared>>,
-    state: &Arc<Mutex<RadioState>>,
-) -> Option<LinkEvent> {
+fn handle(ty: &u8, p: &[u8], shared: &Arc<Mutex<Shared>>, state: &Arc<Mutex<RadioState>>) -> Option<LinkEvent> {
     let now = Instant::now();
     match RadioType::from_u8(*ty)? {
         RadioType::Hello => {
@@ -530,20 +511,12 @@ fn handle(
                 if let Some(mut c) = sh.console.take()
                     && let Some(d) = c.done.take()
                 {
-                    let _ = d.send(Err(a
-                        .code()
-                        .map(|c| c.explain())
-                        .unwrap_or("refused")
-                        .to_string()));
+                    let _ = d.send(Err(a.code().map(|c| c.explain()).unwrap_or("refused").to_string()));
                 }
             } else if a.req_type == HostType::Cat as u8
                 && let Some(c) = sh.cat.take()
             {
-                let _ = c.send(Err(a
-                    .code()
-                    .map(|c| c.explain())
-                    .unwrap_or("refused")
-                    .to_string()));
+                let _ = c.send(Err(a.code().map(|c| c.explain()).unwrap_or("refused").to_string()));
             }
             Some(LinkEvent::Ack(a))
         }
