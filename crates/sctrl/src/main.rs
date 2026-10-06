@@ -5,6 +5,7 @@
 //! 5 timeout, 6 the radio reported an error.
 
 mod cli;
+mod gui;
 
 use clap::Parser;
 use serde_json::json;
@@ -25,10 +26,7 @@ fn main() {
         .build()
         .expect("tokio runtime");
     let code = match &cli.cmd {
-        None | Some(Cmd::Gui) => {
-            eprintln!("sctrl: the window comes in the next build; `sctrl daemon` serves commands meanwhile");
-            2
-        }
+        None | Some(Cmd::Gui) => gui::run(cli.serial.clone(), rt),
         Some(Cmd::Daemon) => rt.block_on(daemon(cli.serial.clone())),
         Some(_) => rt.block_on(async {
             if !cli.direct
@@ -57,13 +55,17 @@ async fn one(cli: &Cli, env: &mut Env) -> i32 {
     }
 }
 
-/// Hold the radio and serve `sctrl` commands over the socket.
-async fn daemon(serial: Option<String>) -> i32 {
-    let svc = Service::start(serial, LinkOptions::default());
-    let s2 = svc.clone();
-    let handler = move |argv: Vec<String>, sink: ipc::Sink| {
-        let svc = s2.clone();
-        async move {
+/// The socket's request handler: a command parsed and run on the shared LINK.
+pub fn ipc_handler(
+    svc: Service,
+) -> impl Fn(Vec<String>, ipc::Sink) -> std::pin::Pin<Box<dyn std::future::Future<Output = i32> + Send>>
++ Send
++ Sync
++ Clone
++ 'static {
+    move |argv: Vec<String>, sink: ipc::Sink| {
+        let svc = svc.clone();
+        Box::pin(async move {
             let full: Vec<String> = std::iter::once("sctrl".to_string()).chain(argv).collect();
             let cli = match Cli::try_parse_from(&full) {
                 Ok(c) => c,
@@ -95,8 +97,13 @@ async fn daemon(serial: Option<String>) -> i32 {
                     e.code()
                 }
             }
-        }
-    };
+        })
+    }
+}
+
+/// Hold the radio and serve `sctrl` commands over the socket.
+async fn daemon(serial: Option<String>) -> i32 {
+    let svc = Service::start(serial, LinkOptions::default());
     let mut state = svc.watch_state();
     tokio::spawn(async move {
         loop {
@@ -107,7 +114,7 @@ async fn daemon(serial: Option<String>) -> i32 {
         }
     });
     let r = tokio::select! {
-        r = ipc::serve(env!("SCTRL_BUILD_ID"), handler) => r,
+        r = ipc::serve(env!("SCTRL_BUILD_ID"), ipc_handler(svc.clone())) => r,
         _ = tokio::signal::ctrl_c() => Ok(()),
     };
     ipc::cleanup();
