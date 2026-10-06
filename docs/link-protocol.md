@@ -47,7 +47,7 @@ crc  = CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF, no reflection, xorout 0) ov
   | Direction | Max body |
   |---|---|
   | radio → host | 1024 B |
-  | host → radio | 80 B |
+  | host → radio | 56 B for buffered frames; a `CMD` line up to 120 B (streamed into the console's own line, so it needs no LINK buffer) |
 
 - A frame with a bad CRC, an oversize body or a body shorter than 4 bytes is dropped and
   counted.
