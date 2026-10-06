@@ -1,5 +1,5 @@
-//! SPECTRUM frames: one waterfall line with its axis, and the radio's
-//! waterfall palettes (alt2 `ui_waterfall.c`).
+//! SPECTRUM frames: one waterfall update with its axis (the engine's
+//! `spec_view_t`), and the radio's waterfall palettes (alt2 `ui_waterfall.c`).
 
 use serde::Serialize;
 
@@ -8,21 +8,24 @@ pub struct SpectrumLine {
     pub line_seq: u16,
     pub flags: u8,
     pub palette: u8,
+    pub width: u16,
     pub centre_hz: u32,
     pub hz_per_px: f32,
     pub dial_hz: u32,
     pub dial_x: i16,
     pub pass_lo_x: i16,
     pub pass_hi_x: i16,
-    pub bottom_db: i16,
-    pub top_db: i16,
-    pub rate10: u16,
+    pub valid: bool,
+    pub receiving: bool,
+    pub scanning: bool,
     pub sweep_pct: u8,
     pub lines: u8,
     pub load_rx: u8,
     pub load_wf: u8,
-    pub width: u16,
-    pub centre_px: u16,
+    pub guard: bool,
+    pub bottom_db: i16,
+    pub top_db: i16,
+    pub rate10: u16,
     /// 4-bit levels, one per pixel.
     pub levels: Vec<u8>,
     /// dBFS + 160 per pixel (0 = none), when the radio sends a trace.
@@ -31,7 +34,7 @@ pub struct SpectrumLine {
 }
 
 impl SpectrumLine {
-    pub const HEADER: usize = 36;
+    pub const HEADER: usize = 38;
 
     pub fn parse(p: &[u8]) -> Option<Self> {
         if p.len() < Self::HEADER {
@@ -40,7 +43,7 @@ impl SpectrumLine {
         let u16_at = |o: usize| u16::from_le_bytes([p[o], p[o + 1]]);
         let i16_at = |o: usize| u16_at(o) as i16;
         let u32_at = |o: usize| u32::from_le_bytes([p[o], p[o + 1], p[o + 2], p[o + 3]]);
-        let width = u16_at(32) as usize;
+        let width = u16_at(4) as usize;
         let flags = p[2];
         let packed = width.div_ceil(2);
         let mut at = Self::HEADER;
@@ -66,30 +69,37 @@ impl SpectrumLine {
             line_seq: u16_at(0),
             flags,
             palette: p[3],
-            centre_hz: u32_at(4),
-            hz_per_px: f32::from_bits(u32_at(8)),
-            dial_hz: u32_at(12),
-            dial_x: i16_at(16),
-            pass_lo_x: i16_at(18),
-            pass_hi_x: i16_at(20),
-            bottom_db: i16_at(22),
-            top_db: i16_at(24),
-            rate10: u16_at(26),
-            sweep_pct: p[28],
-            lines: p[29],
-            load_rx: p[30],
-            load_wf: p[31],
             width: width as u16,
-            centre_px: u16_at(34),
+            centre_hz: u32_at(6),
+            hz_per_px: f32::from_bits(u32_at(10)),
+            dial_hz: u32_at(14),
+            dial_x: i16_at(18),
+            pass_lo_x: i16_at(20),
+            pass_hi_x: i16_at(22),
+            valid: p[24] != 0,
+            receiving: p[25] != 0,
+            scanning: p[26] != 0,
+            sweep_pct: p[27],
+            lines: p[28],
+            load_rx: p[29],
+            load_wf: p[30],
+            guard: p[31] != 0,
+            bottom_db: i16_at(32),
+            top_db: i16_at(34),
+            rate10: u16_at(36),
             levels,
             trace,
             peak,
         })
     }
 
+    pub fn centre_px(&self) -> f32 {
+        self.width as f32 / 2.0
+    }
+
     /// Frequency of pixel `x` (from the left of the line).
     pub fn hz_at(&self, x: f32) -> f64 {
-        self.centre_hz as f64 + (x as f64 - self.centre_px as f64) * self.hz_per_px as f64
+        self.centre_hz as f64 + (x as f64 - self.centre_px() as f64) * self.hz_per_px as f64
     }
 }
 
@@ -123,17 +133,19 @@ mod tests {
         let mut p = vec![0u8; SpectrumLine::HEADER];
         p[0] = 7;
         p[2] = 0x01;
-        p[4..8].copy_from_slice(&14_074_000u32.to_le_bytes());
-        p[8..12].copy_from_slice(&10.0f32.to_bits().to_le_bytes());
-        p[32..34].copy_from_slice(&w.to_le_bytes());
-        p[34..36].copy_from_slice(&2u16.to_le_bytes());
+        p[4..6].copy_from_slice(&w.to_le_bytes());
+        p[6..10].copy_from_slice(&14_074_000u32.to_le_bytes());
+        p[10..14].copy_from_slice(&10.0f32.to_bits().to_le_bytes());
+        p[25] = 1;
+        p[32..34].copy_from_slice(&(-120i16).to_le_bytes());
         p.extend_from_slice(&[0x21, 0x43]);
         p.extend_from_slice(&[10, 20, 30, 40]);
         let l = SpectrumLine::parse(&p).unwrap();
         assert_eq!(l.levels, vec![1, 2, 3, 4]);
-        assert_eq!(l.trace.unwrap(), vec![10, 20, 30, 40]);
+        assert_eq!(l.trace.clone().unwrap(), vec![10, 20, 30, 40]);
         assert!(l.peak.is_none());
-        let l = SpectrumLine::parse(&p).unwrap();
+        assert!(l.receiving && !l.valid);
+        assert_eq!(l.bottom_db, -120);
         assert_eq!(l.hz_at(0.0), 14_073_980.0);
         assert!(SpectrumLine::parse(&p[..p.len() - 1]).is_none());
     }

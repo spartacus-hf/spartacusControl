@@ -96,8 +96,8 @@ Caps bits:
 
 ### 0x02 STATUS
 
-Sent at the subscribed rate (default 10 Hz) and at once on a state, mode, page or TX-owner
-change. Also sent during TX and keyed CW, when nothing else is.
+Sent at the subscribed rate (default 10 Hz, up to 20 Hz), also during TX and keyed CW, when
+nothing else is.
 
 | Off | Type | Field |
 |---|---|---|
@@ -192,30 +192,35 @@ Sent on every change and with a full refresh.
 
 ### 0x05 SPECTRUM
 
-One per new waterfall line, only while the WATERFALL page is open (the engine runs only
-then).
+One per waterfall change, only while the WATERFALL page is open (the engine runs only
+then). A 6-byte prefix, the engine's own `spec_view_t` exactly as the firmware holds it
+(32 bytes, natural alignment; the firmware pins the layout with static asserts), then the
+data.
 
 | Off | Type | Field |
 |---|---|---|
-| 0 | u16 | line sequence (increments per line; a gap = lines not sent) |
-| 2 | u8 | flags: bit 0 trace follows, 1 peak follows, 2 scanning, 3 axis valid, 4 receiving, 5 TX guard holding |
+| 0 | u16 | line sequence: advances when a new history line exists (the host appends a line only then; otherwise only the trace, axis or scale changed) |
+| 2 | u8 | flags: bit 0 trace follows, bit 1 peak follows |
 | 3 | u8 | palette (0 CLASSIC, 1 GRAY, 2 HEAT, 3 OCEAN) |
-| 4 | u32 | centre Hz (at pixel `centre_px`) |
-| 8 | f32 | Hz per pixel |
-| 12 | u32 | dial Hz |
-| 16 | i16 | dial x (pixels, may lie off screen) |
-| 18 | i16 | pass-band low x |
-| 20 | i16 | pass-band high x |
-| 22 | i16 | colour scale bottom, dBFS |
-| 24 | i16 | colour scale top, dBFS |
-| 26 | u16 | lines per second x 10 |
-| 28 | u8 | sweep % |
-| 29 | u8 | history lines filled |
-| 30 | u8 | receive load % |
-| 31 | u8 | waterfall load % |
-| 32 | u16 | width in pixels (304) |
-| 34 | u16 | centre pixel (152) |
-| 36 | u8[w/2] | the line: 4-bit levels; pixel `x` is the low nibble of byte `x/2` when `x` is even, the high nibble when odd |
+| 4 | u16 | width `w` in pixels (304); the centre pixel is `w / 2` |
+| 6 | u32 | centre Hz (at the centre pixel) |
+| 10 | f32 | Hz per pixel |
+| 14 | u32 | dial Hz |
+| 18 | i16 | dial x (pixels, may lie off screen) |
+| 20 | i16 | pass-band low x |
+| 22 | i16 | pass-band high x |
+| 24 | u8 | axis valid |
+| 25 | u8 | receiving |
+| 26 | u8 | scanning |
+| 27 | u8 | sweep % |
+| 28 | u8 | history lines filled |
+| 29 | u8 | receive load % |
+| 30 | u8 | waterfall load % |
+| 31 | u8 | TX guard holding |
+| 32 | i16 | colour scale bottom, dBFS |
+| 34 | i16 | colour scale top, dBFS |
+| 36 | u16 | lines per second x 10 |
+| 38 | u8[w/2] | the newest history line: 4-bit levels; pixel `x` is the low nibble of byte `x/2` when `x` is even, the high nibble when odd |
 | ... | u8[w] | trace, if flag bit 0: dBFS + 160, clamped to 1..255; 0 = no data |
 | ... | u8[w] | peak hold, if flag bit 1: dBFS + 160; 0 = empty |
 
