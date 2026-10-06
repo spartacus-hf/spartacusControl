@@ -104,6 +104,7 @@ pub fn ipc_handler(
 /// Hold the radio and serve `sctrl` commands over the socket.
 async fn daemon(serial: Option<String>) -> i32 {
     let svc = Service::start(serial, LinkOptions::default());
+    svc.start_audio();
     let mut state = svc.watch_state();
     tokio::spawn(async move {
         loop {

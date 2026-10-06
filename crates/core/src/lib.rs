@@ -1,6 +1,7 @@
 //! S-CTRL's engine: finding the radio, talking to it over the LINK, and the
 //! host-side watchers (ports, programs). The GUI and the CLI both sit on it.
 
+pub mod audio;
 pub mod console;
 pub mod device;
 pub mod hostview;

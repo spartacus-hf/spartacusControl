@@ -68,6 +68,7 @@ impl ConnState {
 }
 
 struct Inner {
+    audio: Mutex<Option<crate::audio::AudioService>>,
     link: Mutex<Option<Arc<Link>>>,
     device: Mutex<Option<UsbDevice>>,
     host: Mutex<HostView>,
@@ -89,6 +90,7 @@ impl Service {
         let (events, _) = broadcast::channel(8192);
         let svc = Self {
             inner: Arc::new(Inner {
+                audio: Mutex::new(None),
                 link: Mutex::new(None),
                 device: Mutex::new(None),
                 host: Mutex::new(HostView::default()),
@@ -101,6 +103,21 @@ impl Service {
         let s = svc.clone();
         tokio::spawn(async move { s.supervise().await });
         svc
+    }
+
+    /// Start PipeWire handling (PC speaker, TX audio guard) for this radio.
+    pub fn start_audio(&self) -> crate::audio::AudioService {
+        let (a, b) = (self.clone(), self.clone());
+        let audio = crate::audio::AudioService::start(
+            move || a.link().and_then(|l| l.state.lock().unwrap().status.clone()),
+            move || b.device().map(|d| d.serial),
+        );
+        *self.inner.audio.lock().unwrap() = Some(audio.clone());
+        audio
+    }
+
+    pub fn audio(&self) -> Option<crate::audio::AudioService> {
+        self.inner.audio.lock().unwrap().clone()
     }
 
     pub fn link(&self) -> Option<Arc<Link>> {

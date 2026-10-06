@@ -106,6 +106,22 @@ pub enum Cmd {
     /// Switch the radio's USB personality: `audio` leaves the DIAG console for the
     /// sound card + CAT/LINK ports (what S-CTRL needs).
     Usb { target: String },
+    /// PipeWire: `status`; `pc on|off` (PC speaker; --digi, --volume, --output);
+    /// `guard on|off` (moving other programs off the radio's TX audio);
+    /// `rule` (install the WirePlumber rule).
+    Audio {
+        what: String,
+        arg: Option<String>,
+        /// Play DIGI too (off by default).
+        #[arg(long)]
+        digi: bool,
+        /// 0.0 to 1.5.
+        #[arg(long)]
+        volume: Option<f32>,
+        /// Output sink node.name (default: follow the default output).
+        #[arg(long)]
+        output: Option<String>,
+    },
 }
 
 #[derive(Debug)]
@@ -703,6 +719,13 @@ pub async fn run(cli: &Cli, env: &mut Env) -> Result<(), Exit> {
                 "usb {other}: only `audio` (DIAG and DISK MODE are entered on the radio's panel)"
             ))),
         },
+        Cmd::Audio {
+            what,
+            arg,
+            digi,
+            volume,
+            output,
+        } => audio_cmd(cli, env, &what, arg.as_deref(), digi, volume, output).await,
         Cmd::Get { setting } => setting_cmd(cli, env, &setting, None).await,
         Cmd::Set { setting, value } => setting_cmd(cli, env, &setting, Some(&value)).await,
         Cmd::Watch { what, count } => {
@@ -864,6 +887,155 @@ async fn usb_audio(cli: &Cli, env: &mut Env) -> Result<(), Exit> {
     Err(Exit::Timeout(anyhow!(
         "the radio did not come back as a sound card within 20 s"
     )))
+}
+
+async fn audio_cmd(
+    cli: &Cli,
+    env: &mut Env,
+    what: &str,
+    arg: Option<&str>,
+    digi: bool,
+    volume: Option<f32>,
+    output: Option<String>,
+) -> Result<(), Exit> {
+    use sctrl_core::audio;
+    let svc_audio = env.shared.as_ref().and_then(|s| s.audio());
+    match what {
+        "status" => {
+            let (st, graph) = match &svc_audio {
+                Some(a) => (Some(a.status()), a.graph()),
+                None => (None, audio::graph_once().await?),
+            };
+            let serial = env.device(cli.serial.as_deref()).ok().map(|d| d.serial);
+            let src = serial
+                .as_deref()
+                .and_then(|s| graph.radio_source(s))
+                .map(|n| n.name.clone());
+            let sink = serial
+                .as_deref()
+                .and_then(|s| graph.radio_sink(s))
+                .map(|n| n.name.clone());
+            let def = graph.default_sink.clone();
+            let feeding: Vec<String> = serial
+                .as_deref()
+                .and_then(|s| graph.radio_sink(s))
+                .map(|k| {
+                    graph
+                        .feeding(k.id)
+                        .iter()
+                        .map(|(_, n)| format!("{} ({})", graph.client_binary(n), n.name))
+                        .collect()
+                })
+                .unwrap_or_default();
+            if cli.json {
+                env.say(
+                    json!({"ok": true, "radio_source": src, "radio_sink": sink, "default_sink": def,
+                    "into_radio_tx": feeding, "pc_speaker": st, "wireplumber_rule": audio::wp_rule_installed()})
+                    .to_string(),
+                );
+            } else {
+                env.say(format!("radio capture (RX):  {}", src.unwrap_or("-".into())));
+                env.say(format!("radio playback (TX): {}", sink.unwrap_or("-".into())));
+                env.say(format!("default output:      {}", def.unwrap_or("-".into())));
+                env.say(format!(
+                    "playing into the radio's TX audio: {}",
+                    if feeding.is_empty() {
+                        "nothing".into()
+                    } else {
+                        feeding.join(", ")
+                    }
+                ));
+                match st {
+                    Some(s) => {
+                        env.say(format!(
+                            "PC speaker: {:?}  output {}  volume {:.0}%",
+                            s.plan,
+                            s.output.unwrap_or("-".into()),
+                            s.volume * 100.0
+                        ));
+                        for n in s.notes {
+                            env.say(format!("  note: {n}"));
+                        }
+                    }
+                    None => env.say("PC speaker: needs the running S-CTRL (window or `sctrl daemon`)"),
+                }
+                env.say(format!(
+                    "WirePlumber rule: {}",
+                    if audio::wp_rule_installed() {
+                        "installed"
+                    } else {
+                        "not installed (sctrl audio rule)"
+                    }
+                ));
+            }
+            Ok(())
+        }
+        "pc" => {
+            let a = svc_audio.ok_or_else(|| {
+                Exit::NotConnected(anyhow!(
+                    "the PC speaker needs the running S-CTRL (window or `sctrl daemon`)"
+                ))
+            })?;
+            let mut w = a.wish();
+            match arg {
+                Some("on") => w.enabled = true,
+                Some("off") => w.enabled = false,
+                None => {}
+                Some(x) => return Err(Exit::Radio(anyhow!("audio pc {x}: on or off"))),
+            }
+            if digi {
+                w.digi = true;
+            }
+            if let Some(v) = volume {
+                w.volume = v.clamp(0.0, 1.5);
+            }
+            if let Some(o) = output {
+                w.pinned = if o == "default" { None } else { Some(o) };
+            }
+            if let Some(d) = &w.pinned
+                && d.contains("Chireix_SPARTACUS")
+            {
+                return Err(Exit::Refused(Denied {
+                    rule: "R6",
+                    reason: "never play the radio into its own TX audio".into(),
+                }));
+            }
+            a.set_wish(w.clone());
+            tokio::time::sleep(Duration::from_millis(700)).await;
+            let st = a.status();
+            if cli.json {
+                env.say(json!({"ok": true, "wish": w, "status": st}).to_string());
+            } else {
+                env.say(format!(
+                    "PC speaker {}: {:?}  output {}",
+                    if w.enabled { "on" } else { "off" },
+                    st.plan,
+                    st.output.unwrap_or("-".into())
+                ));
+            }
+            Ok(())
+        }
+        "guard" => {
+            let a = svc_audio.ok_or_else(|| Exit::NotConnected(anyhow!("the guard runs in the running S-CTRL")))?;
+            let on = match arg {
+                Some("on") => true,
+                Some("off") => false,
+                _ => return Err(Exit::Radio(anyhow!("audio guard on|off"))),
+            };
+            a.set_auto_protect(on);
+            env.say(format!(
+                "TX audio guard {}",
+                if on { "on" } else { "off (bench: re-enable after)" }
+            ));
+            Ok(())
+        }
+        "rule" => {
+            let p = audio::install_wp_rule()?;
+            env.say(format!("{} written; it applies after `systemctl --user restart wireplumber` (interrupts audio briefly) or a re-plug", p.display()));
+            Ok(())
+        }
+        other => Err(Exit::Radio(anyhow!("audio {other}: status, pc, guard or rule"))),
+    }
 }
 
 async fn input(cli: &Cli, env: &mut Env, code: Input, value: i8) -> Result<(), Exit> {

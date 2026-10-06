@@ -53,6 +53,7 @@ pub fn run(serial: Option<String>, rt: tokio::runtime::Runtime) -> i32 {
         ..Default::default()
     };
     let svc = Service::start(serial, opts);
+    svc.start_audio();
     let server = rt.spawn(ipc::serve(env!("SCTRL_BUILD_ID"), crate::ipc_handler(svc.clone())));
     let viewport = egui::ViewportBuilder::default()
         .with_title("S-CTRL")
@@ -87,7 +88,7 @@ fn window_size(scale: f32, shade: bool) -> Vec2 {
     if shade {
         Vec2::new(screen::W as f32 * scale + 16.0, 30.0)
     } else {
-        Vec2::new(screen::W as f32 * scale + 16.0, screen::H as f32 * scale + 168.0)
+        Vec2::new(screen::W as f32 * scale + 16.0, screen::H as f32 * scale + 198.0)
     }
 }
 
@@ -146,6 +147,25 @@ impl App {
                 ctx.request_repaint();
             }
         });
+        // The TX audio guard says what it did.
+        if let Some(audio) = svc.audio() {
+            let mut rx = audio.subscribe();
+            let a2 = act.clone();
+            rt.spawn(async move {
+                while let Ok(ev) = rx.recv().await {
+                    use sctrl_core::audio::AudioEvent;
+                    match ev {
+                        AudioEvent::Guarded { program, stream } => {
+                            a2.toast(format!("moved {program} ({stream}) off the radio's TX audio"), true)
+                        }
+                        AudioEvent::DefaultMoved { to } => {
+                            a2.toast(format!("the radio was the default output; now {to}"), true)
+                        }
+                        AudioEvent::Note(n) => a2.toast(n, false),
+                    }
+                }
+            });
+        }
         Self {
             comp: companions::Companions::new(act.clone()),
             act,
@@ -341,7 +361,8 @@ impl App {
                 } else {
                     Input::Turn
                 };
-                self.input(code, whole.clamp(-24.0, 24.0) as i8);
+                let sign = wheel_sign(self.status().as_ref());
+                self.input(code, (whole * sign).clamp(-24.0, 24.0) as i8);
             }
         }
         // Click = knob click; held 0.6 s = knob hold (sent while held, as the panel does).
@@ -370,7 +391,9 @@ impl App {
         if resp.secondary_clicked() {
             self.input(Input::Hold, 0);
         }
-        resp.on_hover_text("wheel: knob (Shift: pressed, Ctrl: FUNC)  click: knob click  hold/right click: knob hold");
+        resp.on_hover_text(
+            "wheel: knob (up = tune up / value up / list up; Shift: pressed, Ctrl: FUNC)\nclick: knob click   hold or right click: knob hold",
+        );
     }
 
     fn strip(&mut self, ui: &mut egui::Ui, st: Option<&Status>) {
@@ -505,6 +528,7 @@ impl App {
                 ui.label(RichText::new(format!("FAULT {}", f.join(","))).color(skin::ALERT));
             }
         });
+        self.audio_row(ui);
         ui.horizontal(|ui| {
             self.comp.toggles(ui);
             ui.label(
@@ -518,6 +542,51 @@ impl App {
                 .small(),
             );
         });
+    }
+
+    /// PC speaker: on/off, volume, DIGI override, where it plays, and why not.
+    fn audio_row(&mut self, ui: &mut egui::Ui) {
+        let Some(audio) = self.act.svc.audio() else { return };
+        let mut w = audio.wish();
+        let st = audio.status();
+        let before = w.clone();
+        ui.horizontal(|ui| {
+            ui.toggle_value(&mut w.enabled, "PC SPEAKER")
+                .on_hover_text("the radio's audio on this PC's output (PipeWire loopback; DIGI only on request)");
+            ui.add(egui::Slider::new(&mut w.volume, 0.0..=1.5).show_value(false))
+                .on_hover_text("PC speaker volume");
+            ui.checkbox(&mut w.digi, "DIGI")
+                .on_hover_text("play DIGI too (off by default)");
+            if w.enabled {
+                use sctrl_core::audio::PcPlan;
+                let (text, c) = match &st.plan {
+                    Some(PcPlan::Play { muted: None, latency }) => (
+                        format!(
+                            "-> {} ({} ms)",
+                            st.output.clone().unwrap_or("?".into()),
+                            latency * 1000 / 48000
+                        ),
+                        skin::OK,
+                    ),
+                    Some(PcPlan::Play { muted: Some(why), .. }) => (format!("muted: {why}"), skin::WARN),
+                    Some(PcPlan::Unavailable { reason }) => (reason.clone(), skin::WARN),
+                    _ => ("".into(), skin::MUTED),
+                };
+                ui.label(RichText::new(text).small().color(c));
+            }
+        });
+        for n in st
+            .notes
+            .iter()
+            .filter(|n| !n.starts_with("DIGI") && !n.starts_with("voice TX"))
+        {
+            ui.label(RichText::new(n).small().color(skin::WARN));
+        }
+        if self.act.may_act()
+            && (w.enabled != before.enabled || w.digi != before.digi || (w.volume - before.volume).abs() > 0.001)
+        {
+            audio.set_wish(w);
+        }
     }
 
     fn toasts(&mut self, ui: &mut egui::Ui) {
@@ -619,6 +688,22 @@ impl eframe::App for App {
     }
 }
 
+/// Which way the wheel turns the knob. Clockwise (+) tunes up and raises a
+/// value, but moves *down* a list: in lists the wheel is reversed so that
+/// wheel-up moves the selection up, as anywhere else on the desktop.
+pub fn wheel_sign(s: Option<&Status>) -> f32 {
+    let Some(s) = s else { return 1.0 };
+    let editing = s.ui & 0x40 != 0;
+    let home_level = s.ui & 0x03;
+    let list = match s.page {
+        1 => !editing,        // MENU, browsing (editing a value: up = more)
+        8 | 13 => true,       // SD files, SELFTEST
+        0 => home_level == 1, // HOME zone picker (zones stacked top to bottom)
+        _ => false,
+    };
+    if list { -1.0 } else { 1.0 }
+}
+
 fn tx_lamp(ui: &mut egui::Ui, s: &Status) {
     let (text, fg, bg) = if s.transmitting() {
         (
@@ -646,4 +731,28 @@ fn meter(ui: &mut egui::Ui, name: &str, frac: f32, text: &str) {
     fill.set_width(rect.width() * frac.clamp(0.0, 1.0));
     p.rect_filled(fill, 1.0, skin::OK);
     ui.label(RichText::new(text).small());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn st(page: u8, ui: u8) -> Status {
+        Status {
+            page,
+            ui,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn wheel_up_moves_up_in_lists_and_tunes_up_elsewhere() {
+        assert_eq!(wheel_sign(Some(&st(0, 0))), 1.0); // HOME tuning
+        assert_eq!(wheel_sign(Some(&st(0, 1))), -1.0); // HOME zone picker
+        assert_eq!(wheel_sign(Some(&st(1, 0))), -1.0); // MENU browsing
+        assert_eq!(wheel_sign(Some(&st(1, 0x40))), 1.0); // MENU editing a value
+        assert_eq!(wheel_sign(Some(&st(8, 0))), -1.0); // SD list
+        assert_eq!(wheel_sign(Some(&st(15, 0))), 1.0); // WATERFALL
+        assert_eq!(wheel_sign(None), 1.0);
+    }
 }
