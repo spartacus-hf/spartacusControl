@@ -1,7 +1,7 @@
 //! The TX window: S-CTRL's own transmissions -- TUNE, the paddle, CW
 //! memories -- through core::tx, the same controller, checklist, limits and
-//! audit log as `sctrl tx`. STOP (here, Esc in the main window, `sctrl tx
-//! stop`) always works and is never refused.
+//! audit log as `sctrl tx`. STOP (here, or `sctrl tx stop`) always works and
+//! is never refused.
 
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -113,7 +113,7 @@ impl TxWin {
                     .min_size(Vec2::new(80.0, 28.0));
                 if ui
                     .add(stop)
-                    .on_hover_text("ends whatever S-CTRL keyed and disarms (also Esc in the main window)")
+                    .on_hover_text("ends whatever S-CTRL keyed and disarms")
                     .clicked()
                 {
                     self.stop();

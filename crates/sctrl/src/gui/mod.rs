@@ -574,7 +574,7 @@ impl App {
             self.input(Input::Hold, 0);
         }
         resp.on_hover_text(
-            "wheel: knob (up = tune up / value up / list up; Shift: pressed, Ctrl: FUNC)\nclick: knob click   hold or right click: knob hold",
+            "wheel: knob (up = tune up / value up / list up; Shift: pressed, Ctrl: FUNC)\nclick: knob click   hold or right click: knob hold\nkeys: arrows turn, Enter clicks, Esc is FUNC (back)",
         );
     }
 
@@ -853,13 +853,9 @@ impl App {
             self.input(Input::Click, 0);
         }
         if esc {
-            // STOP: whatever S-CTRL keyed ends (always allowed).
-            if let Some(l) = self.act.svc.link() {
-                self.act.run(Action::StopTransmit, true, async move {
-                    l.request_ok(sctrl_proto::payload::tx_stop()).await?;
-                    Ok(Some("TX stopped".into()))
-                });
-            }
+            // FUNC, as the panel's: back out of a menu or page (STOP is the TX
+            // window's button and `sctrl tx stop`).
+            self.input(Input::Func, 0);
         }
     }
 }
