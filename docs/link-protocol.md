@@ -11,14 +11,15 @@ exported by the firmware host suite `sctrl_link_logic`).
 | Personality | Port | Notes |
 |---|---|---|
 | AUDIO (0483:5740) | CDC port 1, `...-if05` | S-CTRL's port. Port 0 (`if03`) stays with WSJT-X/hamlib CAT and S-CTRL never opens it. |
-| DIAG (0483:5742) | the DIAG CDC port, `...-if00` | Same protocol. No audio. TX is muted in DIAG, so every TX request is refused. |
+| DIAG (0483:5742) | none | The DIAG console has no LINK (flash budget): a host uses its text console, where TX is muted and there is no sound card, and offers the switch to AUDIO (console `exit`). |
 
 A CAT port becomes the console on the first line ending (`cat.c`). The LINK starts from
 that console:
 
 1. The host opens the port and sends `link 1\n`.
-2. The radio answers on the text console: `link=1 caps=<hex> crc=<hex>` then `OK`.
-   (`ERR ...` or an unknown command: the radio has no LINK, so the host uses basic mode.)
+2. The radio answers `OK` on the text console; HELLO then gives the caps and the image CRC.
+   (`ERR link`: wrong version, the DIAG personality, or a LINK already up. `ERR unknown
+   command`: the radio has no LINK, so the host uses basic mode.)
 3. Once that reply has left, the port speaks frames only. The first radio frame is `HELLO`.
 
 The LINK ends, and the port is a fresh CAT port again, when any of these happens:
@@ -68,7 +69,7 @@ packet unless stuffing lengthens them.
 | 0 | u8 | protocol version (1) |
 | 1 | u8 | firmware major |
 | 2 | u8 | firmware minor |
-| 3 | u8 | personality: 0 AUDIO, 1 DIAG |
+| 3 | u8 | personality: 0 AUDIO (v1 firmware runs the LINK in AUDIO only) |
 | 4 | u32 | caps (below) |
 | 8 | u32 | image CRC (as `id` reports it) |
 | 12 | u16 | framebuffer width (320) |
@@ -86,13 +87,13 @@ Caps bits:
 | 0 | SCREEN |
 | 1 | SPECTRUM |
 | 2 | CWDEC |
-| 3 | EVENTS |
-| 4 | SETVAL |
+| 3 | reserved (was EVENTS: STATUS carries the event sequence, section 3) |
+| 4 | reserved (was SETVAL: settings via the console's `set list`) |
 | 5 | CAT tunnel |
 | 6 | TX (ARM, PADDLE, MEMSEND, TUNE) |
 | 7 | MONITOR (monitor mix into USB capture) |
 | 8 | INPUT |
-| 9 | BAND |
+| 9 | reserved (was BAND: SCREEN's flag bit 0 marks band pages) |
 
 ### 0x02 STATUS
 
@@ -118,8 +119,9 @@ nothing else is.
 | 24 | i16 | receive level dBFS x 10 |
 | 26 | u8 | CW WPM |
 | 27 | u8 | CAT: bits 0-1 ports open, bits 4-7 console port (0xF none) |
-| 28 | u16 | time since the last CAT command on port 0, 0.1 s (saturates at 65535) |
-| 30 | u16 | same for port 1 |
+| 28 | u16 | time since the last CAT command on port 0, 0.1 s (saturates at 65535; 65535 also = never) |
+| 30 | u8 | pipeline event sequence: entries logged since boot, wrapping. When it moves, the host reads the new events with the console's `events` (names included) |
+| 31 | u8 | reserved |
 | 32 | u32 | settings hash (changes when any setting value changes) |
 | 36 | u16 | USB-PD contract mV (0 none) |
 | 38 | u16 | receive overruns (low 16 bits, wraps) |
@@ -154,14 +156,14 @@ flags1 bits:
 | 4 | pipeline lockout |
 | 5 | DIAG personality |
 | 6 | keyer cannot radiate (practice, trainer, TX MUTE) |
-| 7 | reserved |
+| 7 | CW power-up arm pending: CW keys nothing until a lever has been held 1 s and released (practice, the trainer and TX TEST key without it) |
 
 ### 0x03 SCREEN
 
 | Off | Type | Field |
 |---|---|---|
 | 0 | u8 | page 0..29 (8 rows each) |
-| 1 | u8 | flags: bit 0 band page (no data: the colour band covers it, see BAND/SPECTRUM); bit 1 last page of a full refresh |
+| 1 | u8 | flags: bit 0 band page (no data follows: the waterfall's band covers it and the host draws SPECTRUM there); bit 1 last page of a full refresh |
 | 2 | ... | RLE of 360 bytes |
 
 The 360 bytes are 320 bitmap bytes followed by 40 attribute bytes:
@@ -180,15 +182,11 @@ Decoding must produce exactly 360 bytes, otherwise the frame is dropped. Pages a
 latest-wins: a page that changes again before it is sent goes out once, with its newest
 content.
 
-### 0x04 BAND
+### 0x04 BAND (not sent by v1 firmware)
 
-| Off | Type | Field |
-|---|---|---|
-| 0 | u8 | first band page |
-| 1 | u8 | number of band pages (0 = no band) |
-| 2 | u8 | kind: 1 waterfall/spectrum |
-
-Sent on every change and with a full refresh.
+Reserved. The band pages are the SCREEN frames with flag bit 0. When the band comes or
+goes (the WATERFALL page opens or closes) the radio sends every page again, so each page's
+flag is fresh.
 
 ### 0x05 SPECTRUM
 
@@ -224,20 +222,11 @@ data.
 | ... | u8[w] | trace, if flag bit 0: dBFS + 160, clamped to 1..255; 0 = no data |
 | ... | u8[w] | peak hold, if flag bit 1: dBFS + 160; 0 = empty |
 
-### 0x06 EVENT
+### 0x06 EVENT (not sent by v1 firmware)
 
-One per new pipeline event.
-
-| Off | Type | Field |
-|---|---|---|
-| 0 | u16 | age ms when sent |
-| 2 | u8 | stage |
-| 3 | u8 | reason |
-| 4 | u8 | severity |
-| 5 | u8 | reserved |
-| 6 | u32 | value |
-
-Names come from the SD pack (`SCTRL.BIN`), not from flash.
+Reserved. STATUS offset 30 counts pipeline events; when it moves, the host runs the console
+command `events`, whose lines carry the names: `<index> age_ms=<ms> <SEVERITY> <STAGE>
+<REASON> <value hex>`, index 0 the newest.
 
 ### 0x07 CWDEC
 
@@ -256,11 +245,10 @@ on the text console.
 The reply to one `CAT` frame, e.g. `FA00014074000;`. An empty payload means the command has
 no reply. `?;` means refused.
 
-### 0x0A SETVAL
+### 0x0A SETVAL (not sent by v1 firmware)
 
-Repeated 5-byte records `{id:u8, value:f32}` (setting ids as `set list`). Sent for a
-`GETVAL`, and with `SETVAL` push subscribed, for the settings whose value changed (found by
-the settings hash scan, section 7).
+Reserved. Settings are read with the console's `set list` / `set get`; STATUS's settings
+hash (offset 32) says when any value changed.
 
 ### 0x0B ACK
 
@@ -287,6 +275,7 @@ the settings hash scan, section 7).
 | 11 | RANGE | value out of range |
 | 12 | DIAG | not in the DIAG personality |
 | 13 | PENDING | a mode or band change is in flight |
+| 14 | PAGE | TUNE needs TX TEST as the mode (a held lever is a carrier only there) |
 
 Every host request with an effect gets exactly one ACK, except `PADDLE` and `HEARTBEAT`
 (ACKed only when refused) and `CMD`/`CAT`/`GETVAL`, whose replies are the answer
@@ -302,7 +291,7 @@ Every host request with an effect gets exactly one ACK, except `PADDLE` and `HEA
 
 | Off | Type | Field |
 |---|---|---|
-| 0 | u8 | kind: 1 armed, 2 disarmed, 3 key-down cap released, 4 heartbeat lost: released, 5 stopped (TX_STOP), 6 memory finished, 7 lever not refreshed: released, 8 memory cap released, 9 another owner took TX |
+| 0 | u8 | kind: 1 armed, 2 disarmed, 3 key-down cap released, 4 heartbeat lost: released, 5 stopped (TX_STOP), 6 memory finished, 7 lever not refreshed: released, 8 memory cap released, 9 another owner took TX, 10 TUNE released: TX TEST left |
 | 1 | u8 | reserved |
 | 2 | u16 | detail (ms or count) |
 
@@ -311,19 +300,19 @@ Every host request with an effect gets exactly one ACK, except `PADDLE` and `HEA
 | Type | Name | Payload | Notes |
 |---|---|---|---|
 | 0x40 | HEARTBEAT | optional u16 host ms | every 250-500 ms. No heartbeat for 1500 ms = release (section 6). |
-| 0x41 | SUB | u16 mask, u8 packets/frame (1-4, default 2), u8 STATUS Hz (1-20, default 10) | mask bits: 0 STATUS, 1 SCREEN, 2 SPECTRUM, 3 SPECTRUM trace+peak, 4 EVENTS, 5 CWDEC, 6 SETVAL push. ACK. |
-| 0x42 | REFRESH | u8 what | bit 0 all screen pages, 1 BAND, 2 all SETVAL, 3 CW decoder text, 4 STATUS now. ACK. |
+| 0x41 | SUB | u16 mask, u8 packets/frame (1-4, default 2), u8 STATUS Hz (1-20, default 10) | mask bits: 0 STATUS, 1 SCREEN, 2 SPECTRUM, 3 SPECTRUM trace+peak, 5 CWDEC (4 and 6 reserved). ACK. |
+| 0x42 | REFRESH | u8 what | bit 0 all screen pages, 3 CW decoder text, 4 STATUS now (1, 2 reserved). ACK. |
 | 0x43 | INPUT | u8 code, i8 value | panel parity, codes below. ACK (BUSY_RT while realtime-critical). |
 | 0x44 | PADDLE | u8 levers | bit 0 DIT, bit 1 DAH. Repeat every ≤ 100 ms while non-zero; released 250 ms after the last one. Needs ARM unless the keyer cannot radiate. |
 | 0x45 | TX_ARM | u8 on, u8 key-down max (0.1 s, 1-255), u8 memory max (s, 1-255), u8 ARM TTL (s, 5-255) | ACK. Refused in DIAG, with a fault or lockout, or while another owner transmits. |
 | 0x46 | TX_STOP | none | Always accepted: levers released, memory stopped, TUNE ended, LINK-owned CAT PTT dropped, disarmed. ACK + TXEVENT 5. |
 | 0x47 | MEMSEND | ASCII ≤ 48 | Through `MOD_CwMemorySend` (the keyer's timing, holds and break-in). Needs ARM unless the keyer cannot radiate. ACK. |
-| 0x48 | CMD | one console line, no newline | Output arrives as CONSOLE frames up to `OK`/`ERR`. One command at a time (BUSY otherwise). Not run while realtime-critical; it waits, as on the text console. |
+| 0x48 | CMD | one console line, no newline | Output arrives as CONSOLE frames up to `OK`/`ERR`. One command at a time (BUSY otherwise). Not run while realtime-critical; it waits, as on the text console. Never `ui` or `paddle`: they take over a terminal and would hold the console until the LINK ends. |
 | 0x49 | CAT | one CAT command, e.g. `FA14074000;` | Reply as CATREPLY. `TX`/`RX`/`TQ1` via the tunnel are refused (UNSUPPORTED): LINK TX uses section 6. |
-| 0x4A | GETVAL | u8 ids (none = all) | Reply as SETVAL frames. |
-| 0x4B | MONITOR | u8 flags, u8 gain | bit 0 monitor mix into USB capture, bit 1 radio phones off while the monitor is on. Gain 0-255 = 0..2x. ACK (UNSUPPORTED before caps bit 7). |
+| 0x4A | GETVAL | | Reserved: UNSUPPORTED in v1 (console `set list`). |
+| 0x4B | MONITOR | u8 flags, u8 gain | bit 0: the headphone mix (receive audio, sidetone, the trainer's prompts, SPOT; before the volume) into the USB capture in place of the receive audio, so the PC hears what the phones hear, keyed CW included. bit 1: the radio's phones silent while it runs. Gain in 1/128ths (128 = 1x, 255 = 2x). Ignored in DIGI, with USB RAW IQ and during the microphone monitor (WSJT-X and gqrx get their streams untouched). Off when the heartbeat lapses or the LINK ends. ACK. |
 | 0x4C | LINK_OFF | none | BYE 0, then the port is a CAT port again. |
-| 0x4D | TUNE | u8 on | Carrier at TUNE % on the TX TEST page. Needs ARM. The key-down cap applies. ACK. |
+| 0x4D | TUNE | u8 on | The carrier at TX TEST TUNE % (setting 221): holds the DIT lever while TX TEST is the mode. Needs ARM; refused with PAGE in any other mode (a held lever would send dits) and released with TXEVENT 10 if TX TEST is left. The key-down cap and the heartbeat apply. ACK. |
 
 INPUT codes:
 
@@ -344,7 +333,7 @@ INPUT codes:
 | Radio condition | LINK behaviour |
 |---|---|
 | Receiving, idle | everything subscribed |
-| `MOD_AudioRealtimeCritical` (keyed CW, TX streams) | STATUS, ACK, TXEVENT, BYE; HEARTBEAT, PADDLE and TX_STOP are taken. SCREEN, SPECTRUM, CONSOLE, CAT, GETVAL and INPUT wait (INPUT: BUSY_RT). |
+| `MOD_AudioRealtimeCritical` (keyed CW, TX streams) | STATUS, ACK, TXEVENT, BYE; HEARTBEAT, PADDLE and TX_STOP are taken. SCREEN, SPECTRUM, CONSOLE, CAT and INPUT wait (INPUT: BUSY_RT). |
 | Storage busy (save, SD) | as receiving, console commands that need storage answer `ERR storage busy` as today |
 | TX from any source | as realtime-critical; the mirror freezes like the panel |
 
@@ -364,9 +353,13 @@ These hold whatever the host does:
 5. **Memory cap.** A memory still sending after its max is stopped (TXEVENT 8).
 6. **One owner.** While CAT PTT or the radio's own key transmits, LINK TX requests get
    BUSY_OWNER. If another owner keys during LINK TX, LINK TX is released (TXEVENT 9).
-7. **Never in DIAG.** TX is muted there; requests get DIAG.
-8. **Existing protections are untouched:** DTR/suspend/reset release, CAT timeout,
-   VIN/SWR/stray-RF trips, HRTIM halt kill.
+7. **Never in DIAG.** TX is muted there, and v1 firmware runs no LINK in DIAG.
+8. **TUNE only on TX TEST.** Anywhere else a held lever sends dits; TUNE is refused there
+   and released when TX TEST is left (TXEVENT 10).
+9. **Existing protections are untouched:** DTR/suspend/reset release, VIN/SWR/stray-RF
+   trips, HRTIM halt kill. The CAT timeout (a CAT PTT no command has followed ends by
+   itself) now follows only the port that keyed: commands on the other port, the LINK's CAT
+   tunnel included, no longer keep it alive.
 
 The host adds its own stricter limits on top. S-CTRL's defaults: TUNE 5 s, stuck lever 3 s,
 memory 60 s, duty 50 % over 5 min; bench 1 s.
@@ -382,9 +375,9 @@ memory 60 s, duty 50 % over 5 min; bench 1 s.
   2. STATUS
   3. CATREPLY
   4. CONSOLE
-  5. EVENT / CWDEC / SETVAL
+  5. CWDEC
   6. SPECTRUM
-  7. BAND / SCREEN
+  7. SCREEN
 - **SOF pacing.**
   - The USB SOF callback arms one IN packet.
   - The IN-complete callback re-arms only while fewer than N packets have gone out in this
@@ -419,16 +412,11 @@ The host's golden test checks them against `ui_preview.py` frames.
 Waterfall palettes: `ui_waterfall.c` `palettes[4][16]`, copied into the host with the
 same check.
 
-## 9. SD pack `SCTRL.BIN` (names stay off flash)
+## 9. Names and metadata
 
-Generated by `alt2/tools/gen_sctrl_pack.py` from the firmware sources and installed on the
-card with the other card files (`flash_rev1.py`, `card`). It holds:
-- event stage, reason and severity names;
-- fault and pipeline bit names;
-- page names;
-- setting metadata (id, name, style, limits, step, decimals, list labels, help id);
-- INPUT code names;
-- the palettes.
-
-The host reads it once per image CRC (`sd get SCTRL.BIN`) and caches it in
-`~/.cache/sctrl/<crc>/`. Format: section 10 (defined with the generator in M2).
+v1 needs no name pack on the card: nothing on the LINK is a code the host must look up in
+firmware tables.
+- Pipeline events: the console's `events` prints the names (STATUS offset 30 says when).
+- Settings: the console's `set list` prints id, name, value, range and step.
+- Fault bits, pages, modes, TX owners, states: fixed in this document (host constants).
+- Palettes: section 8.

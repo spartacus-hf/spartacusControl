@@ -58,6 +58,9 @@ pub fn apply(ctx: &egui::Context) {
     style.text_styles.insert(TextStyle::Heading, FontId::monospace(18.0));
     style.spacing.item_spacing = egui::vec2(6.0, 4.0);
     style.spacing.button_padding = egui::vec2(6.0, 2.0);
+    // Dragging the frameless window must never turn into selecting text:
+    // only the console and diagnostics output opt back in.
+    style.interaction.selectable_labels = false;
     ctx.set_style_of(egui::Theme::Dark, style.clone());
     ctx.set_style_of(egui::Theme::Light, style);
     ctx.set_theme(egui::Theme::Dark);

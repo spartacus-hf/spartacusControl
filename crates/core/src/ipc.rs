@@ -55,7 +55,13 @@ pub async fn forward(argv: Vec<String>, build: &str) -> Option<i32> {
     let mut lines = BufReader::new(r).lines();
     while let Ok(Some(l)) = lines.next_line().await {
         match serde_json::from_str::<Reply>(&l) {
-            Ok(Reply::Out { out }) => println!("{out}"),
+            Ok(Reply::Out { out }) => {
+                use std::io::Write;
+                // The reader went away (`sctrl ... | head`): stop quietly.
+                if writeln!(std::io::stdout(), "{out}").is_err() {
+                    return Some(0);
+                }
+            }
             Ok(Reply::Exit { exit }) => return Some(exit),
             Err(_) => {}
         }

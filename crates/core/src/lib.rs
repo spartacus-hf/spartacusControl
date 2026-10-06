@@ -2,6 +2,7 @@
 //! host-side watchers (ports, programs). The GUI and the CLI both sit on it.
 
 pub mod audio;
+pub mod config;
 pub mod console;
 pub mod device;
 pub mod hostview;
@@ -12,3 +13,4 @@ pub mod safety;
 pub mod service;
 pub mod session;
 pub mod tty;
+pub mod tx;

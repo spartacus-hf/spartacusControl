@@ -584,7 +584,7 @@ pub async fn run(cli: &Cli, env: &mut Env) -> Result<(), Exit> {
             );
             img.save(&out).map_err(|e| anyhow!("{}: {e}", out.display()))?;
             if cli.json {
-                env.say(json!({"ok": true, "file": out, "band": screen.band}).to_string());
+                env.say(json!({"ok": true, "file": out, "band_pages": screen.band_pages}).to_string());
             } else {
                 env.say(out.display().to_string());
             }
@@ -738,11 +738,39 @@ pub async fn run(cli: &Cli, env: &mut Env) -> Result<(), Exit> {
             let l = s.need_link()?;
             let mut rx = l.subscribe();
             let mut n = 0u64;
+            // Events: STATUS says when the radio logged new ones; the console's
+            // `events` gives them with their names.
+            let mut event_seq: Option<u8> = None;
             loop {
                 let ev = tokio::select! {
                     ev = rx.recv() => ev,
                     _ = tokio::signal::ctrl_c() => break,
                 };
+                if what == "events"
+                    && let Ok(LinkEvent::Status(st)) = &ev
+                    && event_seq != Some(st.event_seq)
+                {
+                    let fresh = event_seq.map(|o| st.event_seq.wrapping_sub(o) as usize);
+                    event_seq = Some(st.event_seq);
+                    if let Some(fresh) = fresh
+                        && let Ok(mut evs) = l.read_events(timeout).await
+                    {
+                        evs.retain(|e| (e.index as usize) < fresh);
+                        evs.sort_by_key(|e| std::cmp::Reverse(e.index));
+                        for e in evs {
+                            env.say(if cli.json {
+                                json!(e).to_string()
+                            } else {
+                                format!("{} {} {} {:08X}", e.severity, e.stage, e.reason, e.value)
+                            });
+                            n += 1;
+                        }
+                        if count.is_some_and(|c| n >= c) {
+                            break;
+                        }
+                    }
+                    continue;
+                }
                 let line = match ev {
                     Ok(LinkEvent::Status(st)) if what == "status" => Some(if cli.json {
                         status_json(&st).to_string()
@@ -759,7 +787,6 @@ pub async fn run(cli: &Cli, env: &mut Env) -> Result<(), Exit> {
                             tx_owner_name(st.tx_owner)
                         )
                     }),
-                    Ok(LinkEvent::Event(e)) if what == "events" => Some(json!(e).to_string()),
                     Ok(LinkEvent::CwDec(t)) if what == "cw" => Some(t),
                     Ok(LinkEvent::Closed(e)) => return Err(Exit::NotConnected(anyhow!("link closed: {e}"))),
                     _ => None,

@@ -290,7 +290,7 @@ impl Companions {
             ui.label(RichText::new(format!("> {cmd}")).color(skin::ACCENT));
             egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
                 for l in lines {
-                    ui.label(RichText::new(l).monospace());
+                    ui.add(egui::Label::new(RichText::new(l).monospace()).selectable(true));
                 }
             });
         }
@@ -385,7 +385,7 @@ impl Companions {
         });
         egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
             for l in self.log.lock().unwrap().iter() {
-                ui.label(RichText::new(l).monospace());
+                ui.add(egui::Label::new(RichText::new(l).monospace()).selectable(true));
             }
         });
     }
@@ -404,7 +404,7 @@ impl Companions {
             .map(|l| l.state.lock().unwrap().cw_text.clone())
             .unwrap_or_default();
         egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
-            ui.label(RichText::new(text).monospace().size(18.0).color(skin::FREQ));
+            ui.add(egui::Label::new(RichText::new(text).monospace().size(18.0).color(skin::FREQ)).selectable(true));
         });
     }
 }

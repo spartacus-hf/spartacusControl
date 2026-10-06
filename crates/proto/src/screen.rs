@@ -4,7 +4,6 @@
 //! (alt2 `ui_gfx.c`). The waterfall's "band" pages are not pixels: the host
 //! draws that rectangle from SPECTRUM frames.
 
-use crate::payload::Band;
 use crate::rle;
 
 pub const W: usize = 320;
@@ -33,7 +32,8 @@ pub struct Screen {
     pages: Vec<[u8; PAGE_BYTES]>,
     /// Pages that have been received at least once.
     pub known: [bool; PAGES],
-    pub band: Band,
+    /// Pages the waterfall's band covers (SCREEN flag bit 0), bit per page.
+    pub band_pages: u32,
     /// Pages changed since the consumer last called `take_dirty`.
     dirty: u32,
 }
@@ -49,7 +49,7 @@ impl Screen {
         Self {
             pages: vec![[0u8; PAGE_BYTES]; PAGES],
             known: [false; PAGES],
-            band: Band::default(),
+            band_pages: 0,
             dirty: 0,
         }
     }
@@ -65,12 +65,14 @@ impl Screen {
         }
         let flags = payload[1];
         if flags & 0x01 != 0 {
-            // A band page: the raster covers it.
+            // A band page: the waterfall covers it, the host draws it.
+            self.band_pages |= 1 << page;
             self.known[page] = true;
             self.dirty |= 1 << page;
             return Some(page);
         }
         let data = rle::decode(&payload[2..], PAGE_BYTES)?;
+        self.band_pages &= !(1 << page);
         self.pages[page].copy_from_slice(&data);
         self.known[page] = true;
         self.dirty |= 1 << page;
@@ -87,15 +89,13 @@ impl Screen {
         }
     }
 
-    pub fn set_band(&mut self, band: Band) {
-        if band != self.band {
-            for p in 0..PAGES as u8 {
-                if band.contains(p) || self.band.contains(p) {
-                    self.dirty |= 1 << p;
-                }
-            }
-            self.band = band;
-        }
+    pub fn is_band(&self, page: usize) -> bool {
+        page < PAGES && self.band_pages & (1 << page) != 0
+    }
+
+    /// The band's first page, when there is one.
+    pub fn band_first(&self) -> Option<usize> {
+        (self.band_pages != 0).then(|| self.band_pages.trailing_zeros() as usize)
     }
 
     pub fn take_dirty(&mut self) -> u32 {
@@ -120,7 +120,7 @@ impl Screen {
     /// Rows `page*8 .. page*8+8` as RGBA into `out` (W * H * 4 bytes, row
     /// major). Band pages are left as they are: the caller draws them.
     pub fn render_page_rgba(&self, page: usize, out: &mut [u8]) {
-        if self.band.contains(page as u8) {
+        if self.is_band(page) {
             return;
         }
         let lut: Vec<[u8; 3]> = PALETTE_565.iter().map(|&c| rgb565_to_rgb(c)).collect();
@@ -160,6 +160,21 @@ mod tests {
         assert_eq!(s.pixel(3, 11), 0xC);
         assert_eq!(s.pixel(100, 10), 0);
         assert_eq!(s.take_dirty(), 1 << 1);
+    }
+
+    #[test]
+    fn band_pages_follow_the_flag() {
+        let mut s = Screen::new();
+        assert!(s.apply(&[20, 0x01]).is_some());
+        assert!(s.apply(&[21, 0x01]).is_some());
+        assert!(s.is_band(20) && s.is_band(21) && !s.is_band(19));
+        assert_eq!(s.band_first(), Some(20));
+        // The band goes: the page comes back as pixels.
+        let mut page = vec![20u8, 0x00];
+        page.extend(crate::rle::encode(&[0u8; PAGE_BYTES]));
+        assert!(s.apply(&page).is_some());
+        assert!(!s.is_band(20) && s.is_band(21));
+        assert_eq!(s.band_first(), Some(21));
     }
 
     #[test]

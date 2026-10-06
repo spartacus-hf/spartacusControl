@@ -222,6 +222,7 @@ impl Service {
         match Link::connect(&port, self.inner.opts).await {
             Ok(link) => {
                 let link = Arc::new(link);
+                link.spawn_event_reader();
                 let mut rx = link.subscribe();
                 let fan = self.inner.events.clone();
                 tokio::spawn(async move {

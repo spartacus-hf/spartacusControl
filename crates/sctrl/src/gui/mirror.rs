@@ -60,7 +60,7 @@ impl Mirror {
         }
         for p in 0..screen::PAGES {
             if dirty & (1 << p) != 0 {
-                if s.band.contains(p as u8) {
+                if s.is_band(p) {
                     self.draw_band_page(s, p);
                 } else {
                     s.render_page_rgba(p, &mut self.rgba);
@@ -87,7 +87,7 @@ impl Mirror {
             .iter()
             .map(|&c| rgb565_to_rgb(c))
             .collect();
-        let band_top = s.band.page as usize * 8;
+        let band_top = s.band_first().unwrap_or(page) * 8;
         for r in 0..8 {
             let y = page * 8 + r;
             let line = self.history.get((y - band_top) / 2);

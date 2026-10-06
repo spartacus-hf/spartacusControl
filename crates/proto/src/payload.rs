@@ -37,9 +37,6 @@ impl<'a> Rd<'a> {
         let s = &self.b[self.at - 4..self.at];
         Some(u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
     }
-    fn f32(&mut self) -> Option<f32> {
-        self.u32().map(f32::from_bits)
-    }
     fn rest(&self) -> &'a [u8] {
         &self.b[self.at..]
     }
@@ -152,7 +149,10 @@ pub struct Status {
     pub wpm: u8,
     pub cat: u8,
     pub cat0_age_ds: u16,
-    pub cat1_age_ds: u16,
+    /// Pipeline events logged since boot, wrapping: when it moves, read
+    /// them with the console's `events`.
+    pub event_seq: u8,
+    pub reserved31: u8,
     pub settings_hash: u32,
     pub pd_mv: u16,
     pub rx_overruns: u16,
@@ -189,7 +189,8 @@ impl Status {
             wpm: r.u8()?,
             cat: r.u8()?,
             cat0_age_ds: r.u16()?,
-            cat1_age_ds: r.u16()?,
+            event_seq: r.u8()?,
+            reserved31: r.u8()?,
             settings_hash: r.u32()?,
             pd_mv: r.u16()?,
             rx_overruns: r.u16()?,
@@ -259,6 +260,11 @@ impl Status {
     pub fn keyer_cannot_radiate(&self) -> bool {
         self.flags1 & 0x40 != 0
     }
+    /// CW keys nothing until a lever has been held 1 s and released (the
+    /// radio's power-up arm); practice, the trainer and TX TEST key without it.
+    pub fn cw_arm_pending(&self) -> bool {
+        self.flags1 & 0x80 != 0
+    }
     pub fn cat_ports_open(&self) -> u8 {
         self.cat & 0x03
     }
@@ -280,52 +286,36 @@ impl Status {
     }
 }
 
-// ---- BAND, EVENT, ACK, TXEVENT, BYE, CWDEC, SETVAL ----
+// ---- pipeline events (console `events`), ACK, TXEVENT, BYE, CWDEC ----
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
-pub struct Band {
-    pub page: u8,
-    pub pages: u8,
-    pub kind: u8,
-}
-
-impl Band {
-    pub fn parse(p: &[u8]) -> Option<Self> {
-        let mut r = Rd::new(p);
-        Some(Self {
-            page: r.u8()?,
-            pages: r.u8()?,
-            kind: r.u8()?,
-        })
-    }
-    pub fn contains(&self, page: u8) -> bool {
-        self.pages != 0 && page >= self.page && page < self.page + self.pages
-    }
-}
-
+/// One line of the console's `events`: `<index> age_ms=<ms> <SEVERITY>
+/// <STAGE> <REASON> <value hex>`, index 0 the newest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PipelineEvent {
-    pub age_ms: u16,
-    pub stage: u8,
-    pub reason: u8,
-    pub severity: u8,
+    pub index: u8,
+    pub age_ms: u32,
+    pub severity: String,
+    pub stage: String,
+    pub reason: String,
     pub value: u32,
 }
 
 impl PipelineEvent {
-    pub fn parse(p: &[u8]) -> Option<Self> {
-        let mut r = Rd::new(p);
-        let age_ms = r.u16()?;
-        let stage = r.u8()?;
-        let reason = r.u8()?;
-        let severity = r.u8()?;
-        let _ = r.u8()?;
+    pub fn parse_line(line: &str) -> Option<Self> {
+        let mut t = line.split_whitespace();
+        let index = t.next()?.parse().ok()?;
+        let age_ms = t.next()?.strip_prefix("age_ms=")?.parse().ok()?;
+        let severity = t.next()?.to_string();
+        let stage = t.next()?.to_string();
+        let reason = t.next()?.to_string();
+        let value = u32::from_str_radix(t.next()?, 16).ok()?;
         Some(Self {
+            index,
             age_ms,
+            severity,
             stage,
             reason,
-            severity,
-            value: r.u32()?,
+            value,
         })
     }
 }
@@ -383,19 +373,6 @@ pub fn parse_cwdec(p: &[u8]) -> Option<(u32, String)> {
     let mut r = Rd::new(p);
     let count = r.u32()?;
     Some((count, String::from_utf8_lossy(r.rest()).into_owned()))
-}
-
-/// SETVAL: (id, value) records.
-pub fn parse_setval(p: &[u8]) -> Option<Vec<(u8, f32)>> {
-    if !p.len().is_multiple_of(5) {
-        return None;
-    }
-    let mut r = Rd::new(p);
-    let mut out = Vec::with_capacity(p.len() / 5);
-    while r.at < p.len() {
-        out.push((r.u8()?, r.f32()?));
-    }
-    Some(out)
 }
 
 // ---- Host -> radio builders: (type, payload) ----
@@ -457,10 +434,6 @@ pub fn cat(command: &str) -> Option<HostFrame> {
     (command.len() <= 48 && command.is_ascii()).then(|| (HostType::Cat, command.as_bytes().to_vec()))
 }
 
-pub fn getval(ids: &[u8]) -> HostFrame {
-    (HostType::GetVal, ids.to_vec())
-}
-
 pub fn monitor(mix: bool, phones_off: bool, gain: u8) -> HostFrame {
     (HostType::Monitor, vec![(mix as u8) | ((phones_off as u8) << 1), gain])
 }
@@ -492,6 +465,17 @@ mod tests {
         assert_eq!(s.cat_ports_open(), 1);
         assert_eq!(s.console_port(), None);
         assert!(Status::parse(&b[..47]).is_none());
+    }
+
+    #[test]
+    fn console_event_lines() {
+        let e = PipelineEvent::parse_line("1 age_ms=57568 NOTE USB FB FEED0001").unwrap();
+        assert_eq!((e.index, e.age_ms, e.value), (1, 57568, 0xFEED_0001));
+        assert_eq!(
+            (e.severity.as_str(), e.stage.as_str(), e.reason.as_str()),
+            ("NOTE", "USB", "FB")
+        );
+        assert!(PipelineEvent::parse_line("latched=0 hard_lockout=0").is_none());
     }
 
     #[test]

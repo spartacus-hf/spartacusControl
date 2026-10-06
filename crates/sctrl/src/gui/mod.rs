@@ -49,20 +49,23 @@ pub fn run(serial: Option<String>, rt: tokio::runtime::Runtime) -> i32 {
     }
     let _enter = rt.enter();
     let opts = LinkOptions {
-        sub_mask: sub::STATUS | sub::SCREEN | sub::EVENTS | sub::CWDEC | sub::SETVAL | sub::SPECTRUM,
+        sub_mask: sub::STATUS | sub::SCREEN | sub::CWDEC | sub::SPECTRUM | sub::SPECTRUM_TRACE,
         ..Default::default()
     };
     let svc = Service::start(serial, opts);
     svc.start_audio();
     let server = rt.spawn(ipc::serve(env!("SCTRL_BUILD_ID"), crate::ipc_handler(svc.clone())));
-    let viewport = egui::ViewportBuilder::default()
+    let gui = sctrl_core::config::load().0.gui;
+    let mut viewport = egui::ViewportBuilder::default()
         .with_title("S-CTRL")
         .with_app_id("sctrl")
         .with_decorations(false)
-        .with_always_on_top()
         .with_window_type(X11WindowType::Utility)
         .with_resizable(false)
-        .with_inner_size(window_size(2.0, false));
+        .with_inner_size(window_size(gui.scale.clamp(1.0, 3.0), false));
+    if gui.always_on_top {
+        viewport = viewport.with_always_on_top();
+    }
     let options = eframe::NativeOptions {
         viewport,
         ..Default::default()
@@ -112,6 +115,12 @@ pub struct App {
     wheel: f32,
     freq_edit: Option<String>,
     comp: companions::Companions,
+    /// The height last asked of the window manager (fit to content).
+    fit_h: f32,
+    /// S-CTRL's own settings (config.rs), saved when they change here.
+    cfg: sctrl_core::config::Config,
+    /// A window-manager move began: the release it eats is owed to egui.
+    wm_drag: bool,
 }
 
 impl App {
@@ -129,7 +138,7 @@ impl App {
                 tokio::select! {
                     ev = rx.recv() => match ev {
                         Ok(LinkEvent::Screen(m)) => { d.fetch_or(m, Ordering::Relaxed); }
-                        Ok(LinkEvent::Band(_)) | Ok(LinkEvent::Hello(_)) | Ok(LinkEvent::Closed(_)) => {
+                        Ok(LinkEvent::Hello(_)) | Ok(LinkEvent::Closed(_)) => {
                             d.store(ALL_PAGES, Ordering::Relaxed);
                         }
                         Ok(LinkEvent::Spectrum(l)) => {
@@ -166,6 +175,10 @@ impl App {
                 }
             });
         }
+        let (cfg, cfg_err) = sctrl_core::config::load();
+        if let Some(e) = cfg_err {
+            act.toast(e, true);
+        }
         Self {
             comp: companions::Companions::new(act.clone()),
             act,
@@ -174,13 +187,20 @@ impl App {
             mirror: Mirror::default(),
             dirty,
             spectrum,
-            scale: 2.0,
+            scale: if [1.0, 1.5, 2.0, 3.0].contains(&cfg.gui.scale) {
+                cfg.gui.scale
+            } else {
+                2.0
+            },
             shade: false,
-            pinned: true,
+            pinned: cfg.gui.always_on_top,
+            cfg,
             took_control: false,
             press: None,
             wheel: 0.0,
             freq_edit: None,
+            fit_h: 0.0,
+            wm_drag: false,
         }
     }
 
@@ -210,7 +230,24 @@ impl App {
         });
     }
 
-    fn resize(&self, ctx: &egui::Context) {
+    /// Hand the move to the window manager. It keeps the button release
+    /// (i3 grabs the pointer while moving), so egui would think the button
+    /// still down and swallow the next press: raw_input_hook supplies it.
+    fn start_drag(&mut self, ctx: &egui::Context) {
+        ctx.send_viewport_cmd(ViewportCommand::StartDrag);
+        self.wm_drag = true;
+    }
+
+    fn save_gui(&mut self) {
+        self.cfg.gui.scale = self.scale;
+        self.cfg.gui.always_on_top = self.pinned;
+        if let Err(e) = sctrl_core::config::save(&self.cfg) {
+            self.act.toast(format!("settings not saved: {e:#}"), true);
+        }
+    }
+
+    fn resize(&mut self, ctx: &egui::Context) {
+        self.fit_h = 0.0; // the next full frame fits the height again
         ctx.send_viewport_cmd(ViewportCommand::InnerSize(window_size(self.scale, self.shade)));
     }
 
@@ -218,34 +255,35 @@ impl App {
 
     fn title_bar(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        // The whole bar drags the window (double click: shade); the buttons,
+        // added after, sit on top of it and take their own clicks.
+        let bar = ui.interact(ui.max_rect(), ui.id().with("drag"), Sense::click_and_drag());
+        if bar.drag_started() {
+            self.start_drag(&ctx);
+        }
+        if bar.double_clicked() {
+            self.shade = !self.shade;
+            self.resize(&ctx);
+        }
+        let mut bar_hover = String::new();
         ui.horizontal(|ui| {
-            let r = ui.add(
-                egui::Label::new(RichText::new("S-CTRL").color(skin::FREQ).strong()).sense(Sense::click_and_drag()),
-            );
-            if r.drag_started() {
-                ctx.send_viewport_cmd(ViewportCommand::StartDrag);
-            }
-            let (text, colour) = match self.act.svc.state() {
-                ConnState::Linked { serial, .. } => (format!("LINK  {serial}"), skin::OK),
-                ConnState::Connecting { .. } => ("connecting".into(), skin::WARN),
-                other => (other.summary(), skin::WARN),
+            ui.add(egui::Label::new(RichText::new("S-CTRL").color(skin::FREQ).strong()).selectable(false));
+            let (text, colour, hover) = match self.act.svc.state() {
+                ConnState::Linked { serial, port } => ("LINK".to_string(), skin::OK, format!("{serial} on {port}")),
+                ConnState::Connecting { serial } => ("connecting".into(), skin::WARN, serial),
+                other => {
+                    let s = other.summary();
+                    (s.clone(), skin::WARN, s)
+                }
             };
-            ui.label(RichText::new(text).color(colour).small());
-            // The rest of the bar drags the window too.
-            let rest = ui.available_rect_before_wrap();
-            let buttons_w = 150.0;
-            let drag_rect = egui::Rect::from_min_max(
-                rest.min,
-                egui::pos2((rest.max.x - buttons_w).max(rest.min.x), rest.max.y),
+            // Truncated so the buttons always keep their room, whatever the
+            // scale. No sense of its own: it would take the bar's drag.
+            ui.add(
+                egui::Label::new(RichText::new(text).color(colour).small())
+                    .selectable(false)
+                    .truncate(),
             );
-            let drag = ui.interact(drag_rect, ui.id().with("drag"), Sense::click_and_drag());
-            if drag.drag_started() {
-                ctx.send_viewport_cmd(ViewportCommand::StartDrag);
-            }
-            if drag.double_clicked() {
-                self.shade = !self.shade;
-                self.resize(&ctx);
-            }
+            bar_hover = hover;
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.small_button("x").on_hover_text("close S-CTRL").clicked() {
                     ctx.send_viewport_cmd(ViewportCommand::Close);
@@ -261,21 +299,32 @@ impl App {
                 let pin = if self.pinned { "pin*" } else { "pin" };
                 if ui.small_button(pin).on_hover_text("always on top").clicked() {
                     self.pinned = !self.pinned;
+                    self.save_gui();
                     ctx.send_viewport_cmd(ViewportCommand::WindowLevel(if self.pinned {
                         egui::WindowLevel::AlwaysOnTop
                     } else {
                         egui::WindowLevel::Normal
                     }));
                 }
-                for s in [3.0f32, 2.0, 1.5, 1.0] {
-                    let label = format!("{s}x");
-                    if ui.selectable_label((self.scale - s).abs() < 0.01, label).clicked() {
-                        self.scale = s;
-                        self.resize(&ctx);
+                // One button for the scale: four would not fit at 1x.
+                ui.menu_button(format!("{}x", self.scale), |ui| {
+                    for s in [1.0f32, 1.5, 2.0, 3.0] {
+                        if ui
+                            .selectable_label((self.scale - s).abs() < 0.01, format!("{s}x"))
+                            .clicked()
+                        {
+                            self.scale = s;
+                            self.resize(&ctx);
+                            self.save_gui();
+                            ui.close();
+                        }
                     }
-                }
+                })
+                .response
+                .on_hover_text("screen scale");
             });
         });
+        bar.on_hover_text(bar_hover);
     }
 
     fn shade_line(&mut self, ui: &mut egui::Ui, st: Option<&Status>) {
@@ -284,7 +333,7 @@ impl App {
                 egui::Label::new(RichText::new("S-CTRL").color(skin::FREQ).strong()).sense(Sense::click_and_drag()),
             );
             if r.drag_started() {
-                ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
+                self.start_drag(ui.ctx());
             }
             if r.double_clicked() {
                 self.shade = false;
@@ -402,7 +451,7 @@ impl App {
             return;
         };
         let cat_program = self.act.context(self.took_control, false).cat_program;
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             tx_lamp(ui, s);
             // The dial: click to type a frequency.
             match &mut self.freq_edit {
@@ -452,7 +501,7 @@ impl App {
                     }
                 });
         });
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             for m in ["USB", "LSB", "CW", "AM", "FM", "DIGI"] {
                 let on = s.mode_name() == m;
                 if ui.selectable_label(on, m).clicked() && !on
@@ -474,7 +523,7 @@ impl App {
                 self.took_control = false;
             }
         });
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             meter(
                 ui,
                 "S",
@@ -489,7 +538,7 @@ impl App {
             ui.label(format!("VIN {:.2} V", s.vin_mv as f32 / 1000.0));
             ui.label(RichText::new(format!("PD {:.0} V", s.pd_mv as f32 / 1000.0)).color(skin::MUTED));
         });
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             for (name, code) in [
                 ("UP", Input::Up),
                 ("DN", Input::Dn),
@@ -529,7 +578,7 @@ impl App {
             }
         });
         self.audio_row(ui);
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             self.comp.toggles(ui);
             ui.label(
                 RichText::new(format!(
@@ -550,7 +599,7 @@ impl App {
         let mut w = audio.wish();
         let st = audio.status();
         let before = w.clone();
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.toggle_value(&mut w.enabled, "PC SPEAKER")
                 .on_hover_text("the radio's audio on this PC's output (PipeWire loopback; DIGI only on request)");
             ui.add(egui::Slider::new(&mut w.volume, 0.0..=1.5).show_value(false))
@@ -653,6 +702,18 @@ impl eframe::App for App {
         [0.0, 0.0, 0.0, 1.0]
     }
 
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        if std::mem::take(&mut self.wm_drag) {
+            let pos = ctx.input(|i| i.pointer.latest_pos()).unwrap_or_default();
+            raw.events.push(egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::default(),
+            });
+        }
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.act.set_pass(ui.ctx());
         let st = self.status();
@@ -665,16 +726,32 @@ impl eframe::App for App {
             ui.ctx().request_repaint_after(Duration::from_millis(250));
             return;
         }
-        egui::Panel::top("title")
+        let top_h = egui::Panel::top("title")
             .frame(egui::Frame::NONE.fill(skin::PANEL).inner_margin(4.0))
             .show(ui, |ui| {
                 self.title_bar(ui);
-            });
-        egui::Panel::bottom("strip")
+            })
+            .response
+            .rect
+            .height();
+        let strip_h = egui::Panel::bottom("strip")
             .frame(egui::Frame::NONE.fill(skin::BG).inner_margin(6.0))
             .show(ui, |ui| {
                 self.strip(ui, st.as_ref());
-            });
+            })
+            .response
+            .rect
+            .height();
+        // The window fits what it shows: at 1x the strip's rows wrap and need
+        // more height than at 3x; never let them cover the screen.
+        let want = (top_h + screen::H as f32 * self.scale + 16.0 + strip_h).ceil();
+        if self.act.may_act() && (want - self.fit_h).abs() > 1.0 {
+            self.fit_h = want;
+            ui.ctx().send_viewport_cmd(ViewportCommand::InnerSize(Vec2::new(
+                screen::W as f32 * self.scale + 16.0,
+                want,
+            )));
+        }
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(skin::BG).inner_margin(8.0))
             .show(ui, |ui| {

@@ -80,6 +80,7 @@ fn every_vector_agrees() {
                 assert_eq!(s.settings_hash, 0xDEAD_BEEF);
                 assert_eq!(s.ref_ppm_x100, -1720);
                 assert_eq!((s.band, s.arm_left_s), (6, 42));
+                assert_eq!((s.cat0_age_ds, s.event_seq), (0x1234, 0x5A));
             }
             other => panic!("unknown vector kind {other}"),
         }

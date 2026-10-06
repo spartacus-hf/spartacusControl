@@ -20,13 +20,11 @@ pub enum RadioType {
     Hello = 0x01,
     Status = 0x02,
     Screen = 0x03,
-    Band = 0x04,
+    // 0x04 BAND, 0x06 EVENT and 0x0A SETVAL: reserved (not sent by v1 firmware).
     Spectrum = 0x05,
-    Event = 0x06,
     CwDec = 0x07,
     Console = 0x08,
     CatReply = 0x09,
-    SetVal = 0x0A,
     Ack = 0x0B,
     Bye = 0x0C,
     TxEvent = 0x0D,
@@ -39,13 +37,10 @@ impl RadioType {
             0x01 => Hello,
             0x02 => Status,
             0x03 => Screen,
-            0x04 => Band,
             0x05 => Spectrum,
-            0x06 => Event,
             0x07 => CwDec,
             0x08 => Console,
             0x09 => CatReply,
-            0x0A => SetVal,
             0x0B => Ack,
             0x0C => Bye,
             0x0D => TxEvent,
@@ -68,7 +63,7 @@ pub enum HostType {
     MemSend = 0x47,
     Cmd = 0x48,
     Cat = 0x49,
-    GetVal = 0x4A,
+    // 0x4A GETVAL: reserved.
     Monitor = 0x4B,
     LinkOff = 0x4C,
     Tune = 0x4D,
@@ -88,7 +83,6 @@ impl HostType {
             0x47 => MemSend,
             0x48 => Cmd,
             0x49 => Cat,
-            0x4A => GetVal,
             0x4B => Monitor,
             0x4C => LinkOff,
             0x4D => Tune,
@@ -115,6 +109,7 @@ pub enum AckCode {
     Range = 11,
     Diag = 12,
     Pending = 13,
+    Page = 14,
 }
 
 impl AckCode {
@@ -135,6 +130,7 @@ impl AckCode {
             11 => Range,
             12 => Diag,
             13 => Pending,
+            14 => Page,
             _ => return None,
         })
     }
@@ -157,6 +153,7 @@ impl AckCode {
             Range => "value out of range",
             Diag => "not in the DIAG personality (TX is muted there)",
             Pending => "refused: a mode or band change is in flight",
+            Page => "refused: TUNE needs the radio's TX TEST page (a held key is a carrier only there)",
         }
     }
 }
@@ -174,6 +171,7 @@ pub enum TxEventKind {
     LeverStale = 7,
     MemoryCap = 8,
     OtherOwner = 9,
+    TuneLeft = 10,
 }
 
 impl TxEventKind {
@@ -189,6 +187,7 @@ impl TxEventKind {
             7 => LeverStale,
             8 => MemoryCap,
             9 => OtherOwner,
+            10 => TuneLeft,
             _ => return None,
         })
     }
@@ -200,9 +199,8 @@ pub mod sub {
     pub const SCREEN: u16 = 1 << 1;
     pub const SPECTRUM: u16 = 1 << 2;
     pub const SPECTRUM_TRACE: u16 = 1 << 3;
-    pub const EVENTS: u16 = 1 << 4;
+    // 4 and 6 reserved (EVENTS and SETVAL push before v1 shipped).
     pub const CWDEC: u16 = 1 << 5;
-    pub const SETVAL: u16 = 1 << 6;
 }
 
 /// HELLO caps bits.
@@ -210,20 +208,17 @@ pub mod caps {
     pub const SCREEN: u32 = 1 << 0;
     pub const SPECTRUM: u32 = 1 << 1;
     pub const CWDEC: u32 = 1 << 2;
-    pub const EVENTS: u32 = 1 << 3;
-    pub const SETVAL: u32 = 1 << 4;
+    // 3, 4 and 9 reserved (EVENTS, SETVAL, BAND before v1 shipped).
     pub const CAT: u32 = 1 << 5;
     pub const TX: u32 = 1 << 6;
     pub const MONITOR: u32 = 1 << 7;
     pub const INPUT: u32 = 1 << 8;
-    pub const BAND: u32 = 1 << 9;
 }
 
 /// REFRESH bits.
 pub mod refresh {
     pub const SCREEN: u8 = 1 << 0;
-    pub const BAND: u8 = 1 << 1;
-    pub const SETVAL: u8 = 1 << 2;
+    // 1 and 2 reserved.
     pub const CWDEC: u8 = 1 << 3;
     pub const STATUS: u8 = 1 << 4;
 }

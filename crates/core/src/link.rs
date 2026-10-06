@@ -3,14 +3,14 @@
 //! pushes into `RadioState` and broadcasts it; requests (console lines, CAT
 //! commands, input, TX) go out from the caller with their replies matched up.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use sctrl_proto::frame::{AckCode, HostType, Input, RadioType, sub};
-use sctrl_proto::payload::{self, Ack, Band, Hello, HostFrame, PipelineEvent, Status, TxEvent};
+use sctrl_proto::payload::{self, Ack, Hello, HostFrame, PipelineEvent, Status, TxEvent};
 use sctrl_proto::screen::Screen;
 use sctrl_proto::slip::{Decoder, Event, encode_frame};
 use sctrl_proto::spectrum::SpectrumLine;
@@ -27,9 +27,9 @@ pub struct RadioState {
     pub status: Option<Status>,
     pub status_at: Option<Instant>,
     pub screen: Screen,
-    pub settings: BTreeMap<u8, f32>,
     pub cw_text: String,
     pub cw_count: u32,
+    /// Pipeline events as the console's `events` printed them, oldest first.
     pub events: VecDeque<(Instant, PipelineEvent)>,
     pub spectrum: Option<Arc<SpectrumLine>>,
     pub txevents: VecDeque<(Instant, TxEvent)>,
@@ -53,11 +53,11 @@ pub enum LinkEvent {
     Status(Box<Status>),
     /// Screen pages that changed (bit per page).
     Screen(u32),
-    Band(Band),
     Spectrum(Arc<SpectrumLine>),
+    /// A new pipeline event (read with the console's `events` when STATUS's
+    /// event sequence moved).
     Event(PipelineEvent),
     CwDec(String),
-    SetVal(Vec<(u8, f32)>),
     TxEvent(TxEvent),
     Ack(Ack),
     Bye(u8),
@@ -74,7 +74,7 @@ pub struct LinkOptions {
 impl Default for LinkOptions {
     fn default() -> Self {
         Self {
-            sub_mask: sub::STATUS | sub::SCREEN | sub::EVENTS | sub::CWDEC | sub::SETVAL,
+            sub_mask: sub::STATUS | sub::SCREEN | sub::CWDEC,
             packets_per_frame: 2,
             status_hz: 10,
         }
@@ -202,6 +202,63 @@ impl Link {
         let hb = link.heartbeat_task();
         link.tasks.push(hb);
         Ok(link)
+    }
+
+    /// The console's `events`: the radio's pipeline event ring, newest
+    /// first (index 0).
+    pub async fn read_events(&self, timeout: Duration) -> Result<Vec<PipelineEvent>> {
+        let lines = self.cmd("events", timeout).await?;
+        Ok(lines.iter().filter_map(|l| PipelineEvent::parse_line(l)).collect())
+    }
+
+    /// Read new pipeline events when STATUS says there are some: the
+    /// console's `events` (names included), at most once a second. Runs
+    /// for as long as the LINK holds an `Arc` to itself elsewhere.
+    pub fn spawn_event_reader(self: &Arc<Self>) {
+        let me = Arc::downgrade(self);
+        let mut rx = self.subscribe();
+        let events = self.events.clone();
+        tokio::spawn(async move {
+            let mut seen: Option<u8> = None;
+            let mut last = Instant::now() - Duration::from_secs(10);
+            loop {
+                let seq = match rx.recv().await {
+                    Ok(LinkEvent::Status(s)) => s.event_seq,
+                    Ok(LinkEvent::Closed(_)) | Err(broadcast::error::RecvError::Closed) => return,
+                    _ => continue,
+                };
+                if seen == Some(seq) || last.elapsed() < Duration::from_secs(1) {
+                    continue;
+                }
+                let Some(link) = me.upgrade() else { return };
+                last = Instant::now();
+                let Ok(mut got) = link.read_events(Duration::from_secs(10)).await else {
+                    continue;
+                };
+                got.sort_by_key(|e| std::cmp::Reverse(e.index)); // oldest first
+                // The first read is history; later ones add what is new.
+                let fresh = match seen {
+                    None => got.len(),
+                    Some(old) => (seq.wrapping_sub(old) as usize).min(got.len()),
+                };
+                seen = Some(seq);
+                let now = Instant::now();
+                let mut st = link.state.lock().unwrap();
+                if st.events.is_empty() {
+                    for e in &got {
+                        st.events.push_back((now, e.clone()));
+                    }
+                } else {
+                    for e in &got[got.len() - fresh..] {
+                        st.events.push_back((now, e.clone()));
+                        let _ = events.send(LinkEvent::Event(e.clone()));
+                    }
+                }
+                while st.events.len() > 200 {
+                    st.events.pop_front();
+                }
+            }
+        });
     }
 
     fn heartbeat_task(&self) -> JoinHandle<()> {
@@ -431,26 +488,12 @@ fn handle(ty: &u8, p: &[u8], shared: &Arc<Mutex<Shared>>, state: &Arc<Mutex<Radi
             st.stats.screen_pages += 1;
             Some(LinkEvent::Screen(1 << page))
         }
-        RadioType::Band => {
-            let b = Band::parse(p)?;
-            state.lock().unwrap().screen.set_band(b);
-            Some(LinkEvent::Band(b))
-        }
         RadioType::Spectrum => {
             let l = Arc::new(SpectrumLine::parse(p)?);
             let mut st = state.lock().unwrap();
             st.spectrum = Some(l.clone());
             st.stats.spectrum_lines += 1;
             Some(LinkEvent::Spectrum(l))
-        }
-        RadioType::Event => {
-            let e = PipelineEvent::parse(p)?;
-            let mut st = state.lock().unwrap();
-            st.events.push_back((now, e.clone()));
-            while st.events.len() > 200 {
-                st.events.pop_front();
-            }
-            Some(LinkEvent::Event(e))
         }
         RadioType::CwDec => {
             let (count, text) = payload::parse_cwdec(p)?;
@@ -462,14 +505,6 @@ fn handle(ty: &u8, p: &[u8], shared: &Arc<Mutex<Shared>>, state: &Arc<Mutex<Radi
                 st.cw_text.drain(..cut);
             }
             Some(LinkEvent::CwDec(text))
-        }
-        RadioType::SetVal => {
-            let v = payload::parse_setval(p)?;
-            let mut st = state.lock().unwrap();
-            for &(id, val) in &v {
-                st.settings.insert(id, val);
-            }
-            Some(LinkEvent::SetVal(v))
         }
         RadioType::Console => {
             let mut sh = shared.lock().unwrap();

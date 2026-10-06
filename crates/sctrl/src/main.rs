@@ -46,7 +46,12 @@ async fn one(cli: &Cli, env: &mut Env) -> i32 {
         Ok(()) => 0,
         Err(e) => {
             if cli.json {
-                println!("{}", json!({"ok": false, "error": e.kind(), "message": e.message()}));
+                use std::io::Write;
+                let _ = writeln!(
+                    std::io::stdout(),
+                    "{}",
+                    json!({"ok": false, "error": e.kind(), "message": e.message()})
+                );
             } else {
                 eprintln!("sctrl: {}", e.message());
             }
