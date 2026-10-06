@@ -1,14 +1,11 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+//! S-CTRL's engine: finding the radio, talking to it over the LINK, and the
+//! host-side watchers (ports, programs). The GUI and the CLI both sit on it.
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub mod console;
+pub mod device;
+pub mod hostview;
+pub mod link;
+pub mod procs;
+pub mod safety;
+pub mod session;
+pub mod tty;

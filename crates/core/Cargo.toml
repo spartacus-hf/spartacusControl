@@ -8,3 +8,12 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+anyhow = "1.0.104"
+libc = "0.2.190"
+nix = { version = "0.31.3", features = ["term", "fs", "poll", "signal", "process"] }
+sctrl-proto = { version = "0.1.0", path = "../proto" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+thiserror = "2.0.21"
+tokio = { version = "1.53.2", features = ["rt-multi-thread", "net", "io-util", "time", "sync", "macros", "process", "signal", "fs"] }
+tracing = "0.1.44"
