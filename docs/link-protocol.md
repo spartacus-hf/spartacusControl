@@ -21,6 +21,9 @@ that console:
    (`ERR link`: wrong version, the DIAG personality, or a LINK already up. `ERR unknown
    command`: the radio has no LINK, so the host uses basic mode.)
 3. Once that reply has left, the port speaks frames only. The first radio frame is `HELLO`.
+   The host sends nothing between `link 1` and `HELLO`: until the radio has switched the
+   port, its bytes reach the text console and are lost (a SUB sent too early leaves a LINK
+   that streams nothing).
 
 The LINK ends, and the port is a fresh CAT port again, when any of these happens:
 - DTR drops (the host closes the port);
@@ -327,6 +330,13 @@ INPUT codes:
 | 11 | FUNC press | — |
 | 12 | FUNC long | — |
 | 13 | knob turn with FUNC held | detents |
+| 14 | open a page, as its menu entry does | page: 0 HOME, 2 FREQ, 4 DIAG, 6 TX TEST, 7 CW TRAINER, 8 SD, 9 PD, 15 WATERFALL; any other is RANGE |
+
+Code 14 opens the page the way the panel's menu does: TX TEST switches the mode to TX TEST and
+the mode comes back when any other page opens; CW TRAINER starts the trainer with its last
+activity; DIAG opens on SYSTEM while the menu shows, else on DIGI in DIGI and on its first page
+in other modes. Like every INPUT it is refused with BUSY_RT while
+the radio is realtime-critical, so a page never changes under a key-down.
 
 ## 5. What runs when
 

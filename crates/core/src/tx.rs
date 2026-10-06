@@ -631,7 +631,15 @@ impl TxController {
         );
         r?;
         self.inhibit(true);
-        Ok(())
+        // The next STATUS says so (10 Hz): what checks ARM next must see it.
+        let end = Instant::now() + Duration::from_millis(800);
+        while Instant::now() < end {
+            if link.snapshot().status.is_some_and(|s| s.armed()) {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        bail!("the radio did not report ARM")
     }
 
     /// Keep the PC awake while armed (systemd-inhibit; gone with S-CTRL).

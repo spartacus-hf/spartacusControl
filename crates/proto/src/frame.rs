@@ -240,6 +240,8 @@ pub enum Input {
     Func = 11,
     FuncLong = 12,
     FuncTurn = 13,
+    /// Open a page (value = page number) as its menu entry would.
+    OpenPage = 14,
 }
 
 impl Input {

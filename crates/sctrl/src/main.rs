@@ -6,6 +6,7 @@
 
 mod cli;
 mod gui;
+mod tx_cli;
 
 use clap::Parser;
 use serde_json::json;

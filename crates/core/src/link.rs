@@ -181,9 +181,9 @@ impl Link {
         };
         let mut hello_rx = events.subscribe();
         link.tasks.push(tokio::spawn(reader(tty, rest, shared, state, events)));
-        link.send(payload::heartbeat(0)).await?;
-        link.send(payload::sub(opts.sub_mask, opts.packets_per_frame, opts.status_hz))
-            .await?;
+        // Nothing goes out before HELLO: until the radio has switched the
+        // port (after its OK has left), bytes reach the text console and
+        // are lost, and a lost SUB leaves a LINK that streams nothing.
         let wait_hello = async {
             loop {
                 match hello_rx.recv().await {
@@ -197,6 +197,9 @@ impl Link {
         tokio::time::timeout(Duration::from_secs(3), wait_hello)
             .await
             .context("no HELLO from the radio")??;
+        link.send(payload::heartbeat(0)).await?;
+        link.send(payload::sub(opts.sub_mask, opts.packets_per_frame, opts.status_hz))
+            .await?;
         // The heartbeat the transmit guard needs; the radio releases
         // everything the LINK keyed 1.5 s after the last one.
         let hb = link.heartbeat_task();

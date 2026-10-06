@@ -106,7 +106,15 @@ pub enum Cmd {
     /// Switch the radio's USB personality: `audio` leaves the DIAG console for the
     /// sound card + CAT/LINK ports (what S-CTRL needs).
     Usb { target: String },
+    /// S-CTRL's own transmissions behind its safeguards: check, arm, tune, key, mem, stop, policy, log.
+    Tx {
+        #[command(subcommand)]
+        what: crate::tx_cli::TxCmd,
+    },
+    /// Open a radio page: home, freq, diag, tx-test, trainer, sd, pd, waterfall.
+    Goto { page: String },
     /// PipeWire: `status`; `pc on|off` (PC speaker; --digi, --volume, --output);
+    /// `phones on|off` (the radio's own headphones while the PC speaker plays);
     /// `guard on|off` (moving other programs off the radio's TX audio);
     /// `rule` (install the WirePlumber rule).
     Audio {
@@ -195,11 +203,16 @@ impl Env {
         }
     }
 
-    fn say(&mut self, s: impl Into<String>) {
+    /// The running S-CTRL this command runs inside, if any.
+    pub fn service(&self) -> Option<&Service> {
+        self.shared.as_ref()
+    }
+
+    pub(crate) fn say(&mut self, s: impl Into<String>) {
         (self.out)(s.into());
     }
 
-    fn device(&self, serial: Option<&str>) -> Result<UsbDevice, Exit> {
+    pub(crate) fn device(&self, serial: Option<&str>) -> Result<UsbDevice, Exit> {
         if let Some(svc) = &self.shared
             && let Some(d) = svc.device()
         {
@@ -220,7 +233,7 @@ impl Env {
         })
     }
 
-    async fn open(&self, dev: &UsbDevice) -> Result<Sess, Exit> {
+    pub(crate) async fn open(&self, dev: &UsbDevice) -> Result<Sess, Exit> {
         if let Some(svc) = &self.shared {
             return match svc.link() {
                 Some(l) => Ok(Sess::Shared(l)),
@@ -232,7 +245,7 @@ impl Env {
 }
 
 /// A radio session: our own, or the serving S-CTRL's LINK.
-enum Sess {
+pub(crate) enum Sess {
     Owned(Session),
     Shared(Arc<Link>),
 }
@@ -245,7 +258,7 @@ impl Sess {
         }
     }
 
-    fn need_link(&self) -> Result<&Link, Exit> {
+    pub(crate) fn need_link(&self) -> Result<&Link, Exit> {
         match self {
             Sess::Owned(Session::Text { why, .. }) => Err(Exit::Radio(anyhow!("this needs the LINK ({why})"))),
             _ => Ok(self.link().expect("a LINK")),
@@ -267,7 +280,7 @@ impl Sess {
     }
 
     /// Our own session closes; a shared LINK stays up.
-    async fn close(self) {
+    pub(crate) async fn close(self) {
         if let Sess::Owned(s) = self {
             s.close().await;
         }
@@ -287,7 +300,12 @@ async fn wait_status(l: &Link, timeout: Duration) -> Result<Status> {
     }
 }
 
-fn context(dev: &UsbDevice, status: Option<Status>, link_live: bool, take_control: bool) -> (Context, HostView) {
+pub(crate) fn context(
+    dev: &UsbDevice,
+    status: Option<Status>,
+    link_live: bool,
+    take_control: bool,
+) -> (Context, HostView) {
     let host = HostView::gather(Some(dev));
     let cat0 = status.as_ref().map(|s| s.cat0_age_ds).filter(|&a| a != 0xFFFF);
     let cx = Context {
@@ -301,7 +319,7 @@ fn context(dev: &UsbDevice, status: Option<Status>, link_live: bool, take_contro
     (cx, host)
 }
 
-async fn guard(cli: &Cli, dev: &UsbDevice, l: &Link, action: Action) -> Result<(), Exit> {
+pub(crate) async fn guard(cli: &Cli, dev: &UsbDevice, l: &Link, action: Action) -> Result<(), Exit> {
     let st = wait_status(l, Duration::from_secs(2)).await.ok();
     let (cx, _) = context(dev, st, l.closed().is_none(), cli.take_control);
     safety::decide(action, &cx).map_err(Exit::Refused)
@@ -730,6 +748,8 @@ pub async fn run(cli: &Cli, env: &mut Env) -> Result<(), Exit> {
             volume,
             output,
         } => audio_cmd(cli, env, &what, arg.as_deref(), digi, volume, output).await,
+        Cmd::Tx { what } => crate::tx_cli::run(cli, env, what).await,
+        Cmd::Goto { page } => crate::tx_cli::goto(cli, env, &page).await,
         Cmd::Get { setting } => setting_cmd(cli, env, &setting, None).await,
         Cmd::Set { setting, value } => setting_cmd(cli, env, &setting, Some(&value)).await,
         Cmd::Watch { what, count } => {
@@ -1032,6 +1052,13 @@ async fn audio_cmd(
                 }));
             }
             a.set_wish(w.clone());
+            if let Some(svc) = env.service() {
+                let (vol, pin) = (w.volume, w.pinned.clone());
+                svc.update_config(move |c| {
+                    c.pc_speaker.volume = vol;
+                    c.pc_speaker.pinned = pin;
+                })?;
+            }
             tokio::time::sleep(Duration::from_millis(700)).await;
             let st = a.status();
             if cli.json {
@@ -1046,6 +1073,23 @@ async fn audio_cmd(
             }
             Ok(())
         }
+        "phones" => {
+            let svc = env
+                .service()
+                .ok_or_else(|| Exit::NotConnected(anyhow!("needs the running S-CTRL (window or `sctrl daemon`)")))?
+                .clone();
+            let off = match arg {
+                Some("off") => true,
+                Some("on") => false,
+                _ => return Err(Exit::Radio(anyhow!("audio phones on|off"))),
+            };
+            svc.update_config(|c| c.pc_speaker.radio_phones_off = off)?;
+            env.say(format!(
+                "the radio's headphones {} while the PC speaker plays (not DIGI)",
+                if off { "silent" } else { "on" }
+            ));
+            Ok(())
+        }
         "guard" => {
             let a = svc_audio.ok_or_else(|| Exit::NotConnected(anyhow!("the guard runs in the running S-CTRL")))?;
             let on = match arg {
@@ -1053,6 +1097,7 @@ async fn audio_cmd(
                 Some("off") => false,
                 _ => return Err(Exit::Radio(anyhow!("audio guard on|off"))),
             };
+            // For this run only: the guard is on again at the next start.
             a.set_auto_protect(on);
             env.say(format!(
                 "TX audio guard {}",
@@ -1065,7 +1110,7 @@ async fn audio_cmd(
             env.say(format!("{} written; it applies after `systemctl --user restart wireplumber` (interrupts audio briefly) or a re-plug", p.display()));
             Ok(())
         }
-        other => Err(Exit::Radio(anyhow!("audio {other}: status, pc, guard or rule"))),
+        other => Err(Exit::Radio(anyhow!("audio {other}: status, pc, phones, guard or rule"))),
     }
 }
 

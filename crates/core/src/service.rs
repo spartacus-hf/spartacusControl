@@ -7,7 +7,7 @@
 //! never takes a port another program holds: those wait for the user.
 
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tokio::sync::{broadcast, watch};
@@ -69,6 +69,8 @@ impl ConnState {
 
 struct Inner {
     audio: Mutex<Option<crate::audio::AudioService>>,
+    tx: crate::tx::TxController,
+    config: Mutex<crate::config::Config>,
     link: Mutex<Option<Arc<Link>>>,
     device: Mutex<Option<UsbDevice>>,
     host: Mutex<HostView>,
@@ -88,9 +90,15 @@ impl Service {
     pub fn start(serial: Option<String>, opts: LinkOptions) -> Self {
         let (state, _) = watch::channel(ConnState::Absent { others: Vec::new() });
         let (events, _) = broadcast::channel(8192);
+        let (config, err) = crate::config::load();
+        if let Some(e) = err {
+            tracing::warn!("{e}");
+        }
         let svc = Self {
             inner: Arc::new(Inner {
                 audio: Mutex::new(None),
+                tx: crate::tx::TxController::new(config.tx.clone(), "s-ctrl"),
+                config: Mutex::new(config),
                 link: Mutex::new(None),
                 device: Mutex::new(None),
                 host: Mutex::new(HostView::default()),
@@ -102,7 +110,97 @@ impl Service {
         };
         let s = svc.clone();
         tokio::spawn(async move { s.supervise().await });
+        let s = svc.clone();
+        tokio::spawn(async move { s.keep_in_step().await });
         svc
+    }
+
+    /// S-CTRL's transmissions (shared by the window and `sctrl tx`).
+    pub fn tx(&self) -> crate::tx::TxController {
+        self.inner.tx.clone()
+    }
+
+    pub fn config(&self) -> crate::config::Config {
+        self.inner.config.lock().unwrap().clone()
+    }
+
+    /// Change S-CTRL's settings, apply them, and save them.
+    pub fn update_config(&self, f: impl FnOnce(&mut crate::config::Config)) -> anyhow::Result<std::path::PathBuf> {
+        let c = {
+            let mut c = self.inner.config.lock().unwrap();
+            f(&mut c);
+            c.tx.sanitize();
+            c.clone()
+        };
+        self.inner.tx.set_policy(c.tx.clone());
+        if let Some(a) = self.audio() {
+            a.set_auto_protect(c.pc_speaker.tx_guard);
+        }
+        crate::config::save(&c)
+    }
+
+    /// The safety arbiter's view now (took_control: the user's choice).
+    pub fn context(&self, took_control: bool) -> crate::safety::Context {
+        let link = self.link();
+        let status = link.as_ref().and_then(|l| l.snapshot().status);
+        let host = self.host();
+        let cat0 = status.as_ref().map(|s| s.cat0_age_ds).filter(|&a| a != 0xFFFF);
+        crate::safety::Context {
+            cat_program: host.cat_program(cat0),
+            iq_consumer: host.iq_consumer(),
+            took_control,
+            armed: status.as_ref().is_some_and(|s| s.armed()),
+            link_live: link.as_ref().is_some_and(|l| l.closed().is_none()),
+            status,
+            ..Default::default()
+        }
+    }
+
+    /// Four times a second: what S-CTRL holds on the radio follows what it
+    /// should. The sleep inhibitor follows the radio's ARM; a CAT program
+    /// (WSJT-X) appearing ends S-CTRL's ARM; the radio's monitor mix (its
+    /// headphone audio, sidetone and trainer included, into the USB capture)
+    /// is on while the PC speaker plays a mode other than DIGI.
+    async fn keep_in_step(&self) {
+        let mut monitor_sent: Option<(Instant, bool, bool)> = None;
+        loop {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            let Some(link) = self.link() else {
+                self.inner.tx.inhibit(false);
+                monitor_sent = None;
+                continue;
+            };
+            let Some(st) = link.snapshot().status else { continue };
+            if !st.armed() {
+                self.inner.tx.inhibit(false);
+            } else {
+                let cx = self.context(false);
+                if let Some(p) = &cx.cat_program {
+                    tracing::warn!("{p} uses the radio: S-CTRL disarms");
+                    crate::tx::audit(
+                        "s-ctrl",
+                        "disarm",
+                        serde_json::json!({"why": format!("{p} uses the radio")}),
+                    );
+                    let _ = self.inner.tx.arm(&link, &cx, false).await;
+                }
+            }
+            if let Some(audio) = self.audio() {
+                let wish = audio.wish();
+                let phones_off = self.config().pc_speaker.radio_phones_off;
+                let on = wish.enabled && st.mode != 5 && !st.usb_iq() && !st.diag_personality();
+                let phones = on && phones_off;
+                let differs = st.monitor_mix() != on || st.phones_off() != phones;
+                let recently = monitor_sent
+                    .is_some_and(|(t, o, p)| t.elapsed() < Duration::from_secs(2) && o == on && p == phones);
+                if differs && !recently && !st.realtime_critical() {
+                    monitor_sent = Some((Instant::now(), on, phones));
+                    if let Err(e) = link.request_ok(sctrl_proto::payload::monitor(on, phones, 128)).await {
+                        tracing::warn!("MONITOR: {e:#}");
+                    }
+                }
+            }
+        }
     }
 
     /// Start PipeWire handling (PC speaker, TX audio guard) for this radio.
@@ -112,6 +210,12 @@ impl Service {
             move || a.link().and_then(|l| l.state.lock().unwrap().status.clone()),
             move || b.device().map(|d| d.serial),
         );
+        let c = self.config().pc_speaker;
+        let mut w = audio.wish();
+        w.volume = c.volume.clamp(0.0, 1.5);
+        w.pinned = c.pinned.clone();
+        audio.set_wish(w);
+        audio.set_auto_protect(c.tx_guard);
         *self.inner.audio.lock().unwrap() = Some(audio.clone());
         audio
     }
