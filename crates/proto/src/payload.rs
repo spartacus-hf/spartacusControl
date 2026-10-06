@@ -23,9 +23,6 @@ impl<'a> Rd<'a> {
         self.at += 1;
         Some(self.b[self.at - 1])
     }
-    fn i8(&mut self) -> Option<i8> {
-        self.u8().map(|v| v as i8)
-    }
     fn u16(&mut self) -> Option<u16> {
         self.need(2)?;
         self.at += 2;
@@ -395,7 +392,7 @@ pub fn parse_cwdec(p: &[u8]) -> Option<(u32, String)> {
 
 /// SETVAL: (id, value) records.
 pub fn parse_setval(p: &[u8]) -> Option<Vec<(u8, f32)>> {
-    if p.len() % 5 != 0 {
+    if !p.len().is_multiple_of(5) {
         return None;
     }
     let mut r = Rd::new(p);
