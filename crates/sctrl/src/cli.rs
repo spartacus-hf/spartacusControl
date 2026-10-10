@@ -346,7 +346,7 @@ pub(crate) fn context(
 }
 
 pub(crate) async fn guard(cli: &Cli, dev: &UsbDevice, l: &Link, action: Action) -> Result<(), Exit> {
-    let st = wait_status(l, Duration::from_secs(2)).await.ok();
+    let st = wait_status(l, Duration::from_secs(2) * device::patience()).await.ok();
     let (cx, _) = context(dev, st, l.closed().is_none(), cli.take_control);
     safety::decide(action, &cx).map_err(Exit::Refused)
 }
@@ -729,7 +729,7 @@ pub async fn run(cli: &Cli, env: &mut Env) -> Result<(), Exit> {
             // Confirmed by STATUS: the dial the panel shows.
             let mut confirmed = false;
             if r.is_ok() {
-                let end = Instant::now() + Duration::from_secs(2);
+                let end = Instant::now() + Duration::from_secs(2) * device::patience();
                 while Instant::now() < end && !confirmed {
                     confirmed = l.snapshot().status.is_some_and(|st| st.dial_hz == hz);
                     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -761,9 +761,12 @@ pub async fn run(cli: &Cli, env: &mut Env) -> Result<(), Exit> {
             let want = md.trim_end_matches(';').to_string();
             let mut got = String::new();
             if r.is_ok() {
-                let end = Instant::now() + Duration::from_secs(6);
+                let end = Instant::now() + Duration::from_secs(6) * device::patience();
                 while Instant::now() < end {
-                    got = l.cat("MD;", Duration::from_secs(2)).await.unwrap_or_default();
+                    got = l
+                        .cat("MD;", Duration::from_secs(2) * device::patience())
+                        .await
+                        .unwrap_or_default();
                     if got.trim_end_matches(';') == want {
                         break;
                     }

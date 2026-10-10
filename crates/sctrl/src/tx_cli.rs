@@ -154,7 +154,7 @@ pub(crate) fn report_lines(r: &TxReport) -> Vec<String> {
 }
 
 async fn wait_status(l: &Link) -> Result<(), Exit> {
-    let end = Instant::now() + Duration::from_secs(3);
+    let end = Instant::now() + Duration::from_secs(3) * sctrl_core::device::patience();
     while l.snapshot().status.is_none() {
         if Instant::now() > end {
             return Err(Exit::Timeout(anyhow!("no STATUS from the radio")));
@@ -425,7 +425,7 @@ pub async fn goto(cli: &Cli, env: &mut Env, page: &str) -> Result<(), Exit> {
     let r = l.input(Input::OpenPage, id as i8).await;
     let mut ok = false;
     if r.is_ok() {
-        let end = Instant::now() + Duration::from_millis(1500);
+        let end = Instant::now() + Duration::from_millis(1500) * sctrl_core::device::patience();
         while Instant::now() < end && !ok {
             ok = l.snapshot().status.is_some_and(|st| st.page == id);
             tokio::time::sleep(Duration::from_millis(40)).await;

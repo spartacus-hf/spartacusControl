@@ -108,7 +108,7 @@ impl Session {
 /// The console says what board it is: the last check before anything that
 /// changes the radio goes to this port.
 async fn verify_board(c: &mut TextConsole) -> Result<()> {
-    let lines = c.cmd("id", Duration::from_secs(5)).await?;
+    let lines = c.cmd("id", Duration::from_secs(5) * crate::device::patience()).await?;
     let board = lines
         .iter()
         .find_map(|l| l.strip_prefix("board="))

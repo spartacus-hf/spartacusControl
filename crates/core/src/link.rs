@@ -140,7 +140,7 @@ impl Link {
         tty.fresh_session().await?;
         tty.write_all(b"link 1\n").await?;
         let mut text = Vec::<u8>::new();
-        let deadline = Instant::now() + Duration::from_secs(3);
+        let deadline = Instant::now() + Duration::from_secs(3) * crate::device::patience();
         let rest = loop {
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
@@ -199,7 +199,7 @@ impl Link {
                 }
             }
         };
-        tokio::time::timeout(Duration::from_secs(3), wait_hello)
+        tokio::time::timeout(Duration::from_secs(3) * crate::device::patience(), wait_hello)
             .await
             .context("no HELLO from the radio")??;
         link.send(payload::heartbeat(0)).await?;
@@ -339,7 +339,9 @@ impl Link {
 
     /// A request whose ACK must be OK; the radio's reason otherwise.
     pub async fn request_ok(&self, frame: HostFrame) -> Result<()> {
-        let a = self.request(frame, Duration::from_secs(2)).await?;
+        let a = self
+            .request(frame, Duration::from_secs(2) * crate::device::patience())
+            .await?;
         match a.code() {
             Some(AckCode::Ok) => Ok(()),
             Some(c) => bail!("{}", c.explain()),

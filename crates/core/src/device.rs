@@ -288,6 +288,15 @@ pub fn named_port() -> Option<&'static Path> {
     NAMED.get().map(PathBuf::as_path)
 }
 
+/// How many times longer than for a radio on USB to wait for the radio's
+/// answers (`link 1`, HELLO, ACKs, a new dial, mode or page): an emulated
+/// radio on a named port runs several times slower than real time. A wait
+/// ends as soon as the answer comes. TX limits (STATUS freshness, key
+/// times, the heartbeat) never stretch.
+pub fn patience() -> u32 {
+    if named_port().is_some() { 10 } else { 1 }
+}
+
 /// Is `path` (after its symlinks) a Unix98 pseudo-terminal?
 pub fn is_pty(path: &Path) -> bool {
     fs::canonicalize(path).is_ok_and(|t| t.starts_with("/dev/pts"))
@@ -514,6 +523,13 @@ mod tests {
         assert!(d.label().contains("--port"), "{}", d.label());
         assert!(serde_json::to_string(&d).unwrap().contains("\"named\":true"));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn without_a_named_port_every_wait_is_as_before() {
+        // No test names a port: that is process-wide, set once by `--port`.
+        assert_eq!(named_port(), None);
+        assert_eq!(patience(), 1);
     }
 
     #[test]
