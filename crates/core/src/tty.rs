@@ -13,6 +13,8 @@ use tokio::io::unix::AsyncFd;
 
 pub struct Tty {
     fd: AsyncFd<OwnedFd>,
+    /// A pseudo-terminal (`--port`): no modem lines to drop.
+    pty: bool,
 }
 
 impl Tty {
@@ -39,6 +41,7 @@ impl Tty {
         termios::tcflush(fd.as_fd(), FlushArg::TCIOFLUSH).ok();
         Ok(Self {
             fd: AsyncFd::with_interest(fd, Interest::READABLE | Interest::WRITABLE)?,
+            pty: crate::device::is_pty(path),
         })
     }
 
@@ -71,7 +74,15 @@ impl Tty {
     /// DTR low, then high: the radio sees the port close and open, so
     /// whatever session a previous program left on it (a LINK, the console,
     /// its CAT PTT) ends before this one starts.
+    ///
+    /// A pseudo-terminal has no DTR (the ioctl fails with ENOTTY): its far
+    /// end, such as the cortexM4 emulator, raises DTR while the tty is open,
+    /// and the previous program's close already ended its session.
     pub async fn fresh_session(&self) -> Result<()> {
+        if self.pty {
+            let _ = termios::tcflush(self.fd.get_ref().as_fd(), FlushArg::TCIFLUSH);
+            return Ok(());
+        }
         let fd = self.raw_fd();
         let dtr: libc::c_int = libc::TIOCM_DTR;
         // SAFETY: TIOCMBIC/TIOCMBIS read one c_int through the pointer.

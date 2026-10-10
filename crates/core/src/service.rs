@@ -61,6 +61,11 @@ pub enum ConnState {
 impl ConnState {
     pub fn summary(&self) -> String {
         match self {
+            // `--port`: why that port is no radio (yet).
+            ConnState::Absent { others } if let Some(port) = crate::device::named_port() => match others.first() {
+                Some(why) => format!("no SPARTACUS: {why}"),
+                None => format!("no SPARTACUS on {} yet", port.display()),
+            },
             ConnState::Absent { others } if others.is_empty() => "no SPARTACUS on USB".into(),
             ConnState::Absent { others } => format!("no SPARTACUS on USB ({})", others.join("; ")),
             ConnState::Connecting { .. } => "connecting...".into(),
@@ -280,7 +285,8 @@ impl Service {
         let (a, b) = (self.clone(), self.clone());
         let audio = crate::audio::AudioService::start(
             move || a.link().and_then(|l| l.state.lock().unwrap().status.clone()),
-            move || b.device().map(|d| d.serial),
+            // A named pseudo-terminal has no sound card.
+            move || b.device().filter(|d| !d.named).map(|d| d.serial),
         );
         let c = self.config().pc_speaker;
         let mut w = audio.wish();
@@ -370,11 +376,14 @@ impl Service {
         let (dev, all) = found;
         *self.inner.device.lock().unwrap() = dev.clone();
         let Some(dev) = dev else {
-            let others = all
-                .iter()
-                .filter(|d| !matches!(d.kind, device::Kind::Other))
-                .map(UsbDevice::label)
-                .collect();
+            let others = match device::named_port() {
+                Some(port) => device::named_device(port, &all).err().into_iter().collect(),
+                None => all
+                    .iter()
+                    .filter(|d| !matches!(d.kind, device::Kind::Other))
+                    .map(UsbDevice::label)
+                    .collect(),
+            };
             self.set_state(ConnState::Absent { others });
             return;
         };

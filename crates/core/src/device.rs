@@ -11,9 +11,14 @@
 //!
 //! Other devices that matter on this bench are listed (QRP Labs radios,
 //! ST-LINK, the STM32 ROM DFU loader) so the user sees what is plugged in.
+//!
+//! `--port` names the LINK port instead (`name_port`): a pseudo-terminal,
+//! such as the cortexM4 emulator's `usb pty`, or a SPARTACUS's own LINK
+//! port. Without it nothing here changes.
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use serde::Serialize;
 
@@ -67,6 +72,9 @@ pub struct UsbDevice {
     pub ttys: Vec<(u8, PathBuf)>,
     /// ALSA card index, when the device has a sound card.
     pub sound_card: Option<u32>,
+    /// A pseudo-terminal named with `--port`: no USB identity, no sound card.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub named: bool,
 }
 
 impl UsbDevice {
@@ -106,6 +114,14 @@ impl UsbDevice {
     }
 
     pub fn label(&self) -> String {
+        if self.named {
+            let port = self
+                .ttys
+                .first()
+                .map(|(_, t)| t.display().to_string())
+                .unwrap_or_default();
+            return format!("SPARTACUS REV1 on the pseudo-terminal {port} (named with --port: no USB, no sound card)");
+        }
         match &self.kind {
             Kind::Spartacus { personality } => format!(
                 "SPARTACUS REV1 {} ({})",
@@ -234,6 +250,7 @@ pub fn scan_at(root: &Path) -> Vec<UsbDevice> {
             sysfs: dir,
             ttys,
             sound_card,
+            named: false,
         });
     }
     out
@@ -243,14 +260,89 @@ pub fn scan() -> Vec<UsbDevice> {
     scan_at(Path::new("/sys/bus/usb/devices"))
 }
 
-/// The SPARTACUS to use: the one with `serial` if given, else the only (or
-/// first) one attached.
+/// The SPARTACUS to use: the one on the `--port` if one was named, else
+/// the one with `serial` if given, else the only (or first) one attached.
 pub fn find_spartacus(serial: Option<&str>) -> Option<UsbDevice> {
+    if let Some(port) = named_port() {
+        return named_device(port, &scan()).ok();
+    }
     let all: Vec<UsbDevice> = scan().into_iter().filter(UsbDevice::is_spartacus).collect();
     match serial {
         Some(s) => all.into_iter().find(|d| d.serial == s),
         None => all.into_iter().next(),
     }
+}
+
+static NAMED: OnceLock<PathBuf> = OnceLock::new();
+
+/// `--port`: from now on this process's radio is the one on `port`, found
+/// again on every look-up (an emulator restarted in the same directory
+/// gives the link a new pseudo-terminal). Set once, at start-up.
+pub fn name_port(port: &Path) {
+    let abs = std::path::absolute(port).unwrap_or_else(|_| port.to_path_buf());
+    let _ = NAMED.set(abs);
+}
+
+/// The port named with `--port`, absolute; None when the radio is found on USB.
+pub fn named_port() -> Option<&'static Path> {
+    NAMED.get().map(PathBuf::as_path)
+}
+
+/// Is `path` (after its symlinks) a Unix98 pseudo-terminal?
+pub fn is_pty(path: &Path) -> bool {
+    fs::canonicalize(path).is_ok_and(|t| t.starts_with("/dev/pts"))
+}
+
+/// The radio on a named port, or why S-CTRL will not open it. `usb` is a
+/// scan: a port that is one of its ttys keeps that device's rules (only a
+/// SPARTACUS's LINK port, never its CAT port or another radio's); any
+/// other port must be a pseudo-terminal, never a plain device node.
+pub fn named_device(port: &Path, usb: &[UsbDevice]) -> Result<UsbDevice, String> {
+    let target = fs::canonicalize(port).map_err(|e| format!("{}: {e}", port.display()))?;
+    for d in usb {
+        let Some((i, _)) = d
+            .ttys
+            .iter()
+            .find(|(_, t)| fs::canonicalize(t).is_ok_and(|t| t == target))
+        else {
+            continue;
+        };
+        let link = match d.personality() {
+            Some(Personality::Audio) => Some(5),
+            Some(Personality::Diag) => Some(0),
+            _ => None,
+        };
+        if d.is_spartacus() && link == Some(*i) {
+            return Ok(d.clone());
+        }
+        return Err(format!(
+            "{} is interface if{i:02} of {}: S-CTRL opens only a SPARTACUS's LINK port",
+            port.display(),
+            d.label()
+        ));
+    }
+    if !target.starts_with("/dev/pts") {
+        return Err(format!(
+            "{} is neither a pseudo-terminal nor a SPARTACUS's LINK port on USB",
+            port.display()
+        ));
+    }
+    Ok(UsbDevice {
+        kind: Kind::Spartacus {
+            personality: Personality::Audio,
+        },
+        vid: 0,
+        pid: 0,
+        manufacturer: String::new(),
+        product: String::new(),
+        // Never a real radio's (12 upper-case hex digits): nothing keyed by
+        // serial, such as the PC speaker's PipeWire nodes, can match it.
+        serial: "pty".into(),
+        sysfs: PathBuf::new(),
+        ttys: vec![(5, port.to_path_buf())],
+        sound_card: None,
+        named: true,
+    })
 }
 
 /// /dev/serial/by-id entry that points at `tty`.
@@ -387,6 +479,83 @@ mod tests {
         let lp = sp.link_port().unwrap().to_string_lossy().into_owned();
         assert!(lp.ends_with("ttyACM2") || lp.ends_with("-if05"), "{lp}");
         assert!(all.iter().any(|d| d.kind == Kind::StLink));
+        // A device found on USB serialises as it always did.
+        assert!(!serde_json::to_string(sp).unwrap().contains("named"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A pseudo-terminal and its slave's path; the slave lives while the master does.
+    fn pty() -> (nix::pty::PtyMaster, PathBuf) {
+        use nix::fcntl::OFlag;
+        let m = nix::pty::posix_openpt(OFlag::O_RDWR | OFlag::O_NOCTTY).unwrap();
+        nix::pty::grantpt(&m).unwrap();
+        nix::pty::unlockpt(&m).unwrap();
+        let p = PathBuf::from(nix::pty::ptsname_r(&m).unwrap());
+        (m, p)
+    }
+
+    #[test]
+    fn a_named_pty_is_a_radio_without_usb() {
+        let dir = std::env::temp_dir().join(format!("sctrl-named-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let (_m, slave) = pty();
+        // The emulator's session directory links its ports by name.
+        let link = dir.join("tty1");
+        std::os::unix::fs::symlink(&slave, &link).unwrap();
+        assert!(is_pty(&link));
+        let d = named_device(&link, &[]).unwrap();
+        assert!(d.named && d.is_spartacus());
+        assert_eq!(d.personality(), Some(Personality::Audio));
+        assert_eq!(d.link_port(), Some(link.clone()));
+        assert_eq!(d.cat_port(), None);
+        assert_eq!(d.sound_card, None);
+        assert!(!spartacus_serial(&d.serial), "{}", d.serial);
+        assert!(d.label().contains("--port"), "{}", d.label());
+        assert!(serde_json::to_string(&d).unwrap().contains("\"named\":true"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_named_port_is_never_a_plain_device_or_another_radios() {
+        assert!(!is_pty(Path::new("/dev/null")));
+        let e = named_device(Path::new("/dev/null"), &[]).unwrap_err();
+        assert!(e.contains("neither a pseudo-terminal"), "{e}");
+        assert!(named_device(Path::new("/nonexistent/sctrl-tty"), &[]).is_err());
+
+        // A radio on USB keeps its rules when its tty is named: only its
+        // LINK port opens; its CAT port, or a QMX's port, never does.
+        let root = std::env::temp_dir().join(format!("sctrl-named-usb-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let d = root.join("7-1");
+        write(&d.join("idVendor"), "0483\n");
+        write(&d.join("idProduct"), "5740\n");
+        write(&d.join("manufacturer"), "Chireix\n");
+        write(&d.join("product"), "SPARTACUS REV1\n");
+        write(&d.join("serial"), "205D36864D32\n");
+        let q = root.join("1-4");
+        write(&q.join("idVendor"), "0483\n");
+        write(&q.join("idProduct"), "a34c\n");
+        write(&q.join("manufacturer"), "QRP Labs\n");
+        write(&q.join("product"), "QMX Transceiver\n");
+        let mut usb = scan_at(&root);
+        let (cat, link, qmx) = (root.join("ttyACM1"), root.join("ttyACM2"), root.join("ttyACM0"));
+        for t in [&cat, &link, &qmx] {
+            write(t, "");
+        }
+        for u in usb.iter_mut() {
+            u.ttys = if u.is_spartacus() {
+                vec![(3, cat.clone()), (5, link.clone())]
+            } else {
+                vec![(3, qmx.clone())]
+            };
+        }
+        let sp = named_device(&link, &usb).unwrap();
+        assert!(!sp.named && sp.serial == "205D36864D32");
+        let e = named_device(&cat, &usb).unwrap_err();
+        assert!(e.contains("if03") && e.contains("LINK port"), "{e}");
+        let e = named_device(&qmx, &usb).unwrap_err();
+        assert!(e.contains("QRP Labs"), "{e}");
         let _ = fs::remove_dir_all(&root);
     }
 }

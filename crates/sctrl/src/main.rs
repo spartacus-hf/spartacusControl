@@ -22,6 +22,9 @@ fn main() {
         .init();
     let argv: Vec<String> = std::env::args().collect();
     let cli = Cli::parse();
+    if let Some(port) = &cli.port {
+        sctrl_core::device::name_port(port);
+    }
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()

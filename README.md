@@ -17,6 +17,7 @@ Desktop control for the Chireix SPARTACUS REV1 transceiver (alt2 firmware), on L
   declaration and an audit log. STOP is never refused. Never keys next to WSJT-X & co.
 - **`sctrl`, a CLI for scripts and agents** (see [AGENTS.md](AGENTS.md)): with the window
   open, commands share its connection; without it they open the radio themselves.
+  `--port` names a pseudo-terminal instead, such as an emulated radio's.
 
 S-CTRL never opens the radio's CAT port (WSJT-X's); it talks over its own LINK port. Other
 radios on ST's USB ID (QRP Labs QMX, QMX+, QDX ...) are listed and never touched.

@@ -5,8 +5,12 @@
 //! $XDG_RUNTIME_DIR/sctrl/sctrl.sock, mode 0600. One request per
 //! connection: `{"argv": [...]}`; the reply is a stream of `{"out": line}`
 //! and one `{"exit": code}`.
+//!
+//! An S-CTRL on a port named with `--port` serves its own socket,
+//! `port-<hash of the port's path>.sock` next to it: a command for that
+//! port never reaches the S-CTRL holding the radio on USB, nor the reverse.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -33,7 +37,24 @@ pub fn socket_path() -> PathBuf {
     let base = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
-    base.join("sctrl").join("sctrl.sock")
+    base.join("sctrl").join(socket_name(crate::device::named_port()))
+}
+
+fn socket_name(named: Option<&Path>) -> String {
+    match named {
+        None => "sctrl.sock".into(),
+        Some(port) => {
+            // FNV-1a: stable across builds, unlike std's hasher.
+            let h = port
+                .as_os_str()
+                .as_encoded_bytes()
+                .iter()
+                .fold(0xcbf2_9ce4_8422_2325u64, |h, &b| {
+                    (h ^ b as u64).wrapping_mul(0x100_0000_01b3)
+                });
+            format!("port-{h:016x}.sock")
+        }
+    }
 }
 
 /// Is an S-CTRL serving? (A socket file nobody listens on is stale.)
@@ -134,4 +155,18 @@ where
 /// Remove the socket when the server stops.
 pub fn cleanup() {
     let _ = std::fs::remove_file(socket_path());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_named_port_has_its_own_socket() {
+        assert_eq!(socket_name(None), "sctrl.sock");
+        let a = socket_name(Some(Path::new("/tmp/s/tty1")));
+        assert!(a.starts_with("port-") && a.ends_with(".sock"), "{a}");
+        assert_eq!(a, socket_name(Some(Path::new("/tmp/s/tty1"))));
+        assert_ne!(a, socket_name(Some(Path::new("/tmp/t/tty1"))));
+    }
 }

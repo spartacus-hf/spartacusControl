@@ -34,6 +34,11 @@ pub struct Cli {
     /// The radio's USB serial, when several are attached.
     #[arg(long, global = true)]
     pub serial: Option<String>,
+    /// The radio's LINK port, named instead of found on USB: a pseudo-terminal
+    /// (the cortexM4 emulator's `usb pty`, socat) or a SPARTACUS's own LINK port.
+    /// Its S-CTRL serves its own socket.
+    #[arg(long, global = true, conflicts_with = "serial")]
+    pub port: Option<PathBuf>,
     /// Seconds to wait for the radio.
     #[arg(long, global = true, default_value_t = 10.0)]
     pub timeout: f64,
@@ -233,6 +238,9 @@ impl Env {
             && let Some(d) = svc.device()
         {
             return Ok(d);
+        }
+        if let Some(port) = device::named_port() {
+            return device::named_device(port, &device::scan()).map_err(|e| Exit::NotConnected(anyhow!(e)));
         }
         device::find_spartacus(serial).ok_or_else(|| {
             let others: Vec<String> = device::scan()
@@ -514,10 +522,25 @@ pub async fn run(cli: &Cli, env: &mut Env) -> Result<(), Exit> {
         Cmd::Ls => {
             let devs = device::scan();
             let host = HostView::gather(device::find_spartacus(cli.serial.as_deref()).as_ref());
-            let shown: Vec<&UsbDevice> = devs.iter().filter(|d| !matches!(d.kind, device::Kind::Other)).collect();
+            // `--port`: its radio first (unless it is one of the USB devices).
+            let named = device::named_port().map(|p| device::named_device(p, &devs));
+            let mut shown: Vec<&UsbDevice> = Vec::new();
+            if let Some(Ok(d)) = &named
+                && d.named
+            {
+                shown.push(d);
+            }
+            shown.extend(devs.iter().filter(|d| !matches!(d.kind, device::Kind::Other)));
             if cli.json {
-                env.say(json!({"ok": true, "devices": shown, "host": host}).to_string());
+                let mut j = json!({"ok": true, "devices": shown, "host": host});
+                if let Some(Err(e)) = &named {
+                    j["port_error"] = json!(e);
+                }
+                env.say(j.to_string());
                 return Ok(());
+            }
+            if let Some(Err(e)) = &named {
+                env.say(format!("--port: {e}"));
             }
             for d in &shown {
                 env.say(d.label());
@@ -1026,7 +1049,11 @@ async fn audio_cmd(
                 Some(a) => (Some(a.status()), a.graph()),
                 None => (None, audio::graph_once().await?),
             };
-            let serial = env.device(cli.serial.as_deref()).ok().map(|d| d.serial);
+            let serial = env
+                .device(cli.serial.as_deref())
+                .ok()
+                .filter(|d| !d.named)
+                .map(|d| d.serial);
             let src = serial
                 .as_deref()
                 .and_then(|s| graph.radio_source(s))
