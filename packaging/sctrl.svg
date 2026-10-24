@@ -1,23 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
-  <!-- S-CTRL: the radio's screen (a signal on the band) above its panel -->
-  <defs>
-    <linearGradient id="case" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#003a22"/>
-      <stop offset="1" stop-color="#001810"/>
-    </linearGradient>
-    <linearGradient id="glow" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#48ff78" stop-opacity="0.5"/>
-      <stop offset="1" stop-color="#48ff78" stop-opacity="0.04"/>
-    </linearGradient>
-  </defs>
-  <rect x="4" y="4" width="120" height="120" rx="26" fill="url(#case)"/>
-  <rect x="5" y="5" width="118" height="118" rx="25" fill="none" stroke="#00a058" stroke-opacity="0.6" stroke-width="2"/>
-  <rect x="15" y="17" width="98" height="64" rx="7" fill="#000" stroke="#006838" stroke-width="2.5"/>
-  <path d="M21 72 L27 70 L32 72 L38 68 L43 71 L49 66 L53 64 L57 44 L61 27 L65 44 L69 64 L74 67 L80 70 L85 67 L91 71 L96 68 L101 71 L107 70 L107 77 L21 77 Z" fill="url(#glow)"/>
-  <path d="M21 72 L27 70 L32 72 L38 68 L43 71 L49 66 L53 64 L57 44 L61 27 L65 44 L69 64 L74 67 L80 70 L85 67 L91 71 L96 68 L101 71 L107 70" fill="none" stroke="#48ff78" stroke-width="3.5" stroke-linejoin="round" stroke-linecap="round"/>
-  <line x1="61" y1="22" x2="61" y2="77" stroke="#00e8e0" stroke-width="2" stroke-dasharray="3.5 3"/>
-  <circle cx="35" cy="102" r="12" fill="#001810" stroke="#60e090" stroke-width="3.5"/>
-  <line x1="35" y1="102" x2="35" y2="92.5" stroke="#60e090" stroke-width="3.5" stroke-linecap="round"/>
-  <rect x="57" y="94" width="23" height="16" rx="5" fill="#00e8e0"/>
-  <rect x="86" y="94" width="23" height="16" rx="5" fill="#ffc400"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" fill="none">
+  <rect width="1000" height="1000" rx="100" fill="#06365a"/>
+  <g stroke="#fff" stroke-linecap="square" stroke-linejoin="round">
+    <path d="M58 262H194Q220 262 220 288V396Q220 422 246 422H358Q384 422 384 396V128Q384 102 410 102H590Q616 102 616 128V396Q616 422 642 422H754Q780 422 780 396V288Q780 262 806 262H942" stroke-width="62"/>
+    <path stroke-linejoin="miter" d="M348 560H104V682H348V804H104M420 682H460M535 560V804M720 560V804M535 682H720M810 804V560H958M810 682H942" stroke-width="54"/>
+  </g>
 </svg>

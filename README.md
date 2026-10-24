@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="packaging/sctrl.svg" width="96" alt="S-CTRL icon">
-</p>
-
 <h1 align="center">S-CTRL</h1>
 
 <p align="center">
