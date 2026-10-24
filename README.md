@@ -1,12 +1,40 @@
-# S-CTRL — Spartacus Control
+<p align="center">
+  <img src="packaging/sctrl.svg" width="96" alt="S-CTRL icon">
+</p>
 
-Desktop control for the Chireix SPARTACUS REV1 transceiver (alt2 firmware), on Linux.
+<h1 align="center">S-CTRL</h1>
 
-- **A small floating window** that finds the radio on USB by itself and shows its screen
-  live: every page, the waterfall, SPLIT and SPECTRUM included. The ▲ arrow rolls it up to
-  its title bar and back.
+<p align="center">
+  Desktop control for the SPARTACUS REV1 transceiver on Linux:<br>
+  its live screen, its panel, a PC speaker and safeguarded TX, over one USB cable.
+</p>
+
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--or--later-blue" alt="License: GPL-3.0-or-later"></a>
+  <img src="https://img.shields.io/badge/rust-1.95%2B-orange" alt="Rust 1.95+">
+  <img src="https://img.shields.io/badge/platform-Linux%20%C2%B7%20PipeWire-lightgrey" alt="Linux with PipeWire">
+</p>
+
+<p align="center">
+  <img src="docs/images/home.png" width="430" alt="S-CTRL mirroring the radio's HOME page in CW, with the status strip and controls below">
+  &nbsp;
+  <img src="docs/images/waterfall.png" width="430" alt="S-CTRL mirroring the radio's waterfall page">
+</p>
+
+S-CTRL finds the radio on USB by itself and puts its screen on your desktop, live, in a small
+floating window. You turn the knob, press its buttons, change band, mode and frequency from
+the PC, hear the radio on the PC's speakers, and key it behind a checklist that refuses
+anything unsafe. Everything the window does, `sctrl` does from a shell, for scripts and
+agents.
+
+## Features
+
+- **A live mirror of the radio's screen.** Every page, the waterfall, SPLIT and SPECTRUM
+  included, drawn from what the radio sends: only the strips that changed. The ▲ arrow rolls
+  the window up to its title bar and back.
 - **The panel and the main controls:** knob, UP/DN/SEL/FUNC, band, mode, frequency, and a
-  page menu (home, frequency, diagnostics, TX TEST, CW trainer, SD, PD, waterfall).
+  page menu (home, frequency, diagnostics, TX TEST, CW trainer, SD, PD, waterfall). Esc backs
+  out of the radio's menus, as FUNC does.
 - **PC speaker:** the radio's audio, sidetone and CW trainer on the PC's output (DIGI only
   when asked). Low latency for CW, on by default and remembered. It plays next to the PC's
   other audio and never routes anything into the radio's TX input.
@@ -22,10 +50,27 @@ Desktop control for the Chireix SPARTACUS REV1 transceiver (alt2 firmware), on L
 S-CTRL never opens the radio's CAT port (WSJT-X's); it talks over its own LINK port. Other
 radios on ST's USB ID (QRP Labs QMX, QMX+, QDX ...) are listed and never touched.
 
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/tx.png" alt="The TX window: ARM, TUNE, the paddle, CW memories and the pre-TX checklist">
+      <p><b>TX.</b> Nothing keys until every checklist item passes. Here the paddle would be
+      refused three times: the radio is in USB (the paddle needs CW or the TX TEST page), no
+      load has been declared, and it is not armed. Each item says how to fix it.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/diagnostics.png" alt="The diagnostics window: radio state, LINK counters and console commands">
+      <p><b>Diagnostics.</b> The radio's state from its 10 Hz STATUS, the LINK's counters
+      (frames, drops, sequence gaps) and the radio's diagnostic console commands, one click
+      each.</p>
+    </td>
+  </tr>
+</table>
+
 ## Requirements
 
-- The radio on alt2 firmware with the LINK (v8.11 or later) and its USB personality on
-  audio. A radio in DIAG (the console) stays there until you say: the window offers a
+- A SPARTACUS REV1 on alt2 firmware with the LINK (v8.11 or later) and its USB personality
+  on audio. A radio in DIAG (the console) stays there until you say: the window offers a
   button, or `sctrl usb audio`. Without the LINK, the CLI falls back to the console.
 - Linux with PipeWire. S-CTRL runs PipeWire's own tools (`pw-dump`, `pw-loopback`,
   `wpctl`), which come with it, and `systemd-inhibit` where present (the PC stays awake
@@ -33,11 +78,11 @@ radios on ST's USB ID (QRP Labs QMX, QMX+, QDX ...) are listed and never touched
 - Access to the radio's serial ports, as for any USB radio (usually the `uucp` or `dialout`
   group). Nothing else to install or configure: no udev or WirePlumber rules.
 
-## Build
+## Build and install
 
 Only a Rust toolchain (current stable; egui needs 1.95 or later):
 
-```
+```sh
 cargo build --release
 ./target/release/sctrl          # the window
 ./target/release/sctrl --help   # the CLI
@@ -50,6 +95,25 @@ Launching it again while it runs brings the window forward, unshaded (`sctrl sho
 
 Settings live in `~/.config/sctrl/config.json` (PC speaker, TX limits, window, CW memories);
 the TX audit log in `~/.local/state/sctrl/tx.log`.
+
+## From a shell
+
+```console
+$ sctrl status
+SPARTACUS REV1 1A2B3C4D5E6F  firmware v8.11  LINK v1
+RECEIVE    14.225.000 Hz  USB  page HOME
+VIN 11.97 V   PD 0.0 V   S -107.5 dBFS   ref locked +17.79 ppm
+TX: owner none  CAT PTT off  TX MUTE off  armed off  USB VOX off  USB RAW IQ off
+faults none  lockout off  overruns 0  capture gaps 0/10 min
+CAT port 0 (WSJT-X's): closed; last command never
+host: no radio programs running
+$ sctrl tune 7074k && sctrl mode cw && sctrl goto waterfall
+$ sctrl shot -o screen.png
+```
+
+Every command takes `--json` and exits with a code that says what happened (refused by a
+safety rule, timeout, no radio ...). [AGENTS.md](AGENTS.md) has the full list, the recipes and
+the rules S-CTRL enforces.
 
 ## How it works
 
@@ -141,7 +205,7 @@ trainer. In DIGI the capture stays untouched for WSJT-X and the PC speaker is of
 asked. Nothing is ever played into the radio's own sink: in this personality that is the
 transmitter's audio input.
 
-## Layout
+## Repository layout
 
 | Path | What |
 |---|---|
