@@ -1,7 +1,7 @@
 //! The radio's display as the LINK mirrors it: 320 x 240, a one-bit
 //! framebuffer in 30 pages of 8 rows, and 40 x 30 tiles of 8 x 8 pixels each
-//! with a foreground and a background colour from a 16-colour palette
-//! (alt2 `ui_gfx.c`). The waterfall's "band" pages are not pixels: the host
+//! with a foreground and a background colour from the radio's 16-colour
+//! palette. The waterfall's "band" pages are not pixels: the host
 //! draws that rectangle from SPECTRUM frames.
 
 use crate::rle;
@@ -12,7 +12,7 @@ pub const PAGES: usize = H / 8;
 pub const TCOLS: usize = W / 8;
 pub const PAGE_BYTES: usize = W + TCOLS;
 
-/// `ui_gfx.c` palette as RGB565 (index = GFX_* colour).
+/// The radio's palette as RGB565 (index = GFX_* colour).
 pub const PALETTE_565: [u16; 16] = [
     0x0000, 0x00E2, 0x01A4, 0x0347, 0xE7FD, 0x6712, 0x2D0C, 0x075C, 0x02CB, 0x4FEF, 0x378C, 0xFE20, 0xFA06, 0x8000,
     0x0284, 0xFFFF,

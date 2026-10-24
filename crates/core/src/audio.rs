@@ -835,12 +835,12 @@ mod tests {
         for o in [
             json!({"id": 126, "type": "PipeWire:Interface:Device", "info": {"props": {
                 "device.vendor.id": "0x0483", "device.product.id": "0x5740",
-                "device.serial": "Chireix_SPARTACUS_REV1_205D36864D32"}}}),
+                "device.serial": "Chireix_SPARTACUS_REV1_1A2B3C4D5E6F"}}}),
             json!({"id": 131, "type": "PipeWire:Interface:Node", "info": {"props": {
-                "media.class": "Audio/Sink", "node.name": "alsa_output.usb-Chireix_SPARTACUS_REV1_205D36864D32-00.analog-stereo.2",
+                "media.class": "Audio/Sink", "node.name": "alsa_output.usb-Chireix_SPARTACUS_REV1_1A2B3C4D5E6F-00.analog-stereo.2",
                 "object.serial": 362, "device.id": 126}}}),
             json!({"id": 130, "type": "PipeWire:Interface:Node", "info": {"props": {
-                "media.class": "Audio/Source", "node.name": "alsa_input.usb-Chireix_SPARTACUS_REV1_205D36864D32-00.analog-stereo.2",
+                "media.class": "Audio/Source", "node.name": "alsa_input.usb-Chireix_SPARTACUS_REV1_1A2B3C4D5E6F-00.analog-stereo.2",
                 "object.serial": 363, "device.id": 126}}}),
             json!({"id": 91, "type": "PipeWire:Interface:Node", "info": {"props": {
                 "media.class": "Audio/Sink", "node.name": "alsa_output.pci-0000_63_00.6.analog-stereo", "object.serial": 91}}}),
@@ -849,7 +849,7 @@ mod tests {
                 "media.class": "Stream/Output/Audio", "node.name": "Firefox", "client.id": 50}}}),
             json!({"id": 300, "type": "PipeWire:Interface:Link", "info": {"output-node-id": 200, "input-node-id": 131}}),
             json!({"id": 0, "type": "PipeWire:Interface:Metadata", "props": {"metadata.name": "default"},
-                   "metadata": [{"subject": 0, "key": "default.audio.sink", "value": {"name": "alsa_output.usb-Chireix_SPARTACUS_REV1_205D36864D32-00.analog-stereo.2"}}]}),
+                   "metadata": [{"subject": 0, "key": "default.audio.sink", "value": {"name": "alsa_output.usb-Chireix_SPARTACUS_REV1_1A2B3C4D5E6F-00.analog-stereo.2"}}]}),
         ] {
             g.apply(&o);
         }
@@ -859,8 +859,8 @@ mod tests {
     #[test]
     fn finds_the_radio_by_device_not_name() {
         let g = graph();
-        assert_eq!(g.radio_source("205D36864D32").unwrap().serial, 363);
-        assert_eq!(g.radio_sink("205D36864D32").unwrap().id, 131);
+        assert_eq!(g.radio_source("1A2B3C4D5E6F").unwrap().serial, 363);
+        assert_eq!(g.radio_sink("1A2B3C4D5E6F").unwrap().id, 131);
         assert!(g.radio_source("OTHER").is_none());
         // The default is the radio's own sink: the safe output is another one.
         assert_eq!(g.safe_output().unwrap().id, 91);
@@ -896,7 +896,7 @@ mod tests {
     fn removals_drop_objects() {
         let mut g = graph();
         g.apply(&json!({"id": 130, "info": null}));
-        assert!(g.radio_source("205D36864D32").is_none());
+        assert!(g.radio_source("1A2B3C4D5E6F").is_none());
         g.apply(&json!({"id": 300, "info": null}));
         assert!(g.feeding(131).is_empty());
     }

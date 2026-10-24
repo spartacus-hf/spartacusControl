@@ -1,7 +1,7 @@
 //! The radio's text console without the LINK: the DIAG personality's port,
 //! or a CAT port of firmware older than the LINK (a line ending makes a CAT
-//! port the console). Same rules as alt2's rev1_diag.py: one line out,
-//! lines back up to `OK` or `ERR ...`, `# ` lines are commentary.
+//! port the console). One line out, lines back up to `OK` or `ERR ...`,
+//! `# ` lines are commentary.
 
 use std::path::Path;
 use std::time::{Duration, Instant};

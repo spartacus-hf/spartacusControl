@@ -1,6 +1,6 @@
-//! The firmware host suite's vectors (alt2 tools/tests/sctrl_link_logic_test.c,
-//! SCTRL_VECTORS=...) decoded and re-encoded by this crate: both sides of the
-//! LINK must agree byte for byte.
+//! The firmware host suite's vectors (`tests/fixtures/link_vectors.txt`)
+//! decoded and re-encoded by this crate: both sides of the LINK must agree
+//! byte for byte.
 
 use sctrl_proto::slip::{Decoder, Event, encode_frame};
 use sctrl_proto::{crc, payload::Status, rle};

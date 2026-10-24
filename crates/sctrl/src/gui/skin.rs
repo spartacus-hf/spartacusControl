@@ -1,4 +1,4 @@
-//! The look: the radio's own phosphor palette (alt2 ui_gfx.c) on black,
+//! The look: the radio's own phosphor palette on black,
 //! amber and red kept for warnings and transmit, as on the panel.
 
 use eframe::egui::{self, Color32, CornerRadius, FontId, Stroke, TextStyle, Visuals};

@@ -1,4 +1,4 @@
-# SCTRL LINK v1 test vectors, from alt2 tools/tests/sctrl_link_logic_test.c
+# SCTRL LINK v1 test vectors, exported by the firmware's host test suite
 # crc <ascii hex> <crc>; frame <name> <type> <seq> <payload> <wire>;
 # rle <name> <360 decoded bytes> <coding>; hostframe <name> <wire>; status <name> <48 bytes>
 crc 313233343536373839 29b1

@@ -35,7 +35,7 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub serial: Option<String>,
     /// The radio's LINK port, named instead of found on USB: a pseudo-terminal
-    /// (the cortexM4 emulator's `usb pty`, socat) or a SPARTACUS's own LINK port.
+    /// (an emulated radio's, socat) or a SPARTACUS's own LINK port.
     /// Its S-CTRL serves its own socket.
     #[arg(long, global = true, conflicts_with = "serial")]
     pub port: Option<PathBuf>,

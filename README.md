@@ -17,7 +17,7 @@ Desktop control for the Chireix SPARTACUS REV1 transceiver (alt2 firmware), on L
   declaration and an audit log. STOP is never refused. Never keys next to WSJT-X & co.
 - **`sctrl`, a CLI for scripts and agents** (see [AGENTS.md](AGENTS.md)): with the window
   open, commands share its connection; without it they open the radio themselves.
-  `--port` names a pseudo-terminal instead, such as an emulated radio's.
+  `--port` names the LINK port instead: a pseudo-terminal, such as an emulated radio's.
 
 S-CTRL never opens the radio's CAT port (WSJT-X's); it talks over its own LINK port. Other
 radios on ST's USB ID (QRP Labs QMX, QMX+, QDX ...) are listed and never touched.
@@ -111,8 +111,8 @@ The waterfall is the exception. Redrawing its pages for every new line would swa
 LINK, so the radio marks those pages as the *band* and sends them without data. For each new
 line it sends one SPECTRUM frame instead: the frequency axis, the colour scale and 304
 pixels of 4-bit levels (152 B), plus the spectrum trace and peak hold when shown. S-CTRL
-keeps the history and draws the band as the radio's `ui_waterfall.c` does, with the same
-palettes and layouts (WATERFALL, SPLIT, SPECTRUM).
+keeps the history and draws the band as the radio does, with the same palettes and
+layouts (WATERFALL, SPLIT, SPECTRUM).
 
 On the bench (2026-10-06): the HOME page sends about 14 pages a second; the WATERFALL page
 about 9 lines and 6 pages a second; about 24 frames and 3.4 KB per second in both cases.
@@ -148,11 +148,12 @@ transmitter's audio input.
 | `crates/proto` | LINK codec: SLIP, CRC, frames, screen/spectrum decoding. No I/O. |
 | `crates/core` | Engine: discovery, LINK session, safety arbiter, TX controller, PipeWire, SD card, local socket. |
 | `crates/sctrl` | The `sctrl` binary: the window (no arguments), `sctrl daemon`, CLI commands. |
-| `docs/link-protocol.md` | The USB LINK protocol, identical to `alt2/docs/SCTRL_LINK.md`. |
+| `docs/link-protocol.md` | The USB LINK protocol, identical to the firmware's copy. |
 | `scripts/check.sh` | fmt, clippy and tests: run before committing. |
 | `scripts/install.sh` | The release for this user: binary, desktop entry, icon (`--uninstall`). |
 | `packaging` | The desktop entry and the icon (SVG; the PNG is the window's own). |
 | `tests/fixtures` | LINK test vectors shared with the firmware. |
+| `CONTRIBUTING.md` | How to work on S-CTRL: checks, commits, radio safety. |
 | `LICENSE` | The GNU General Public License, version 3. |
 
 ## License

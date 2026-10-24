@@ -13,8 +13,8 @@
 //! ST-LINK, the STM32 ROM DFU loader) so the user sees what is plugged in.
 //!
 //! `--port` names the LINK port instead (`name_port`): a pseudo-terminal,
-//! such as the cortexM4 emulator's `usb pty`, or a SPARTACUS's own LINK
-//! port. Without it nothing here changes.
+//! such as an emulated radio's, or a SPARTACUS's own LINK port. Without it
+//! nothing here changes.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -379,19 +379,19 @@ mod tests {
     fn only_the_whole_tuple_is_a_spartacus() {
         let sp = |vid, pid, m: &str, p: &str, s: &str| classify(vid, pid, m, p, s);
         assert_eq!(
-            sp(0x0483, 0x5740, "Chireix", "SPARTACUS REV1", "205D36864D32"),
+            sp(0x0483, 0x5740, "Chireix", "SPARTACUS REV1", "1A2B3C4D5E6F"),
             Kind::Spartacus {
                 personality: Personality::Audio
             }
         );
         assert_eq!(
-            sp(0x0483, 0x5742, "Chireix", "SPARTACUS REV1 DIAG", "205D36864D32"),
+            sp(0x0483, 0x5742, "Chireix", "SPARTACUS REV1 DIAG", "1A2B3C4D5E6F"),
             Kind::Spartacus {
                 personality: Personality::Diag
             }
         );
         assert_eq!(
-            sp(0x0483, 0x5741, "Chireix", "Chireix TX SD Disk", "205D36864D32"),
+            sp(0x0483, 0x5741, "Chireix", "Chireix TX SD Disk", "1A2B3C4D5E6F"),
             Kind::Spartacus {
                 personality: Personality::Disk
             }
@@ -410,12 +410,12 @@ mod tests {
         ));
         // Even a QRP Labs device on SPARTACUS's own IDs is QRP Labs.
         assert!(matches!(
-            sp(0x0483, 0x5740, "QRP Labs", "SPARTACUS REV1", "205D36864D32"),
+            sp(0x0483, 0x5740, "QRP Labs", "SPARTACUS REV1", "1A2B3C4D5E6F"),
             Kind::QrpLabs { .. }
         ));
         // Near misses are never a SPARTACUS.
         assert_eq!(
-            sp(0x0483, 0x5740, "Chireix", "SPARTACUS REV2", "205D36864D32"),
+            sp(0x0483, 0x5740, "Chireix", "SPARTACUS REV2", "1A2B3C4D5E6F"),
             Kind::UnknownChireix
         );
         assert_eq!(
@@ -427,11 +427,11 @@ mod tests {
             Kind::UnknownChireix
         );
         assert_eq!(
-            sp(0x1234, 0x5740, "Chireix", "SPARTACUS REV1", "205D36864D32"),
+            sp(0x1234, 0x5740, "Chireix", "SPARTACUS REV1", "1A2B3C4D5E6F"),
             Kind::UnknownChireix
         );
         assert_eq!(
-            sp(0x0483, 0x5740, "STMicroelectronics", "SPARTACUS REV1", "205D36864D32"),
+            sp(0x0483, 0x5740, "STMicroelectronics", "SPARTACUS REV1", "1A2B3C4D5E6F"),
             Kind::Other
         );
         assert_eq!(
@@ -468,7 +468,7 @@ mod tests {
         write(&d.join("idProduct"), "5740\n");
         write(&d.join("manufacturer"), "Chireix\n");
         write(&d.join("product"), "SPARTACUS REV1\n");
-        write(&d.join("serial"), "205D36864D32\n");
+        write(&d.join("serial"), "1A2B3C4D5E6F\n");
         fs::create_dir_all(d.join("7-1:1.0/sound/card3")).unwrap();
         fs::create_dir_all(d.join("7-1:1.3/tty/ttyACM1")).unwrap();
         fs::create_dir_all(d.join("7-1:1.5/tty/ttyACM2")).unwrap();
@@ -509,7 +509,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let (_m, slave) = pty();
-        // The emulator's session directory links its ports by name.
+        // A symlink to the pty, as an emulator links its ports by name.
         let link = dir.join("tty1");
         std::os::unix::fs::symlink(&slave, &link).unwrap();
         assert!(is_pty(&link));
@@ -548,7 +548,7 @@ mod tests {
         write(&d.join("idProduct"), "5740\n");
         write(&d.join("manufacturer"), "Chireix\n");
         write(&d.join("product"), "SPARTACUS REV1\n");
-        write(&d.join("serial"), "205D36864D32\n");
+        write(&d.join("serial"), "1A2B3C4D5E6F\n");
         let q = root.join("1-4");
         write(&q.join("idVendor"), "0483\n");
         write(&q.join("idProduct"), "a34c\n");
@@ -567,7 +567,7 @@ mod tests {
             };
         }
         let sp = named_device(&link, &usb).unwrap();
-        assert!(!sp.named && sp.serial == "205D36864D32");
+        assert!(!sp.named && sp.serial == "1A2B3C4D5E6F");
         let e = named_device(&cat, &usb).unwrap_err();
         assert!(e.contains("if03") && e.contains("LINK port"), "{e}");
         let e = named_device(&qmx, &usb).unwrap_err();

@@ -1,7 +1,8 @@
 # Driving the radio with `sctrl` (for agents and scripts)
 
 `sctrl <command>` does one thing and exits. Add `--json` to any command for one JSON object
-per line on stdout.
+per line on stdout. For working on S-CTRL's own code, see
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## How a command reaches the radio
 
@@ -14,7 +15,7 @@ per line on stdout.
   from the menu is the installed `~/.local/bin/sctrl` (`scripts/install.sh`): use that one.
 - `--serial <SERIAL>` picks one of several radios; `--timeout <s>` (default 10).
 - `--port <tty>` names the radio's LINK port instead of finding the radio on USB: a
-  pseudo-terminal, such as an emulated radio's (below), or a SPARTACUS's own `if05` port.
+  pseudo-terminal (an emulated radio's, socat) or a SPARTACUS's own `if05` port.
   A command with `--port` goes only to an S-CTRL started with the same `--port` (it serves
   its own socket), never to the one holding a radio on USB, and the reverse. A
   pseudo-terminal's radio has no sound card: the PC speaker and `audio` leave it alone.
@@ -63,26 +64,6 @@ sctrl audio status                 # radio audio devices, what plays into the ra
 sctrl audio pc on --volume 0.8     # PC speaker; --digi/--no-digi, --output <sink|default>
 sctrl audio pc off                 # (each choice is kept for the next start)
 ```
-
-## An emulated radio
-
-The cortexM4 emulator (`~/projects/cortexM4_emulator`) runs the alt2 image and puts the
-radio's two USB serial ports on pseudo-terminals; S-CTRL drives it like the real one:
-
-```sh
-cd ~/projects/cortexM4_emulator
-tools/emu.py start --name u --alt2 --confirm --usb
-tools/emu.py -s u usb wait
-tools/emu.py -s u usb pty on       # build/sessions/u/tty0 (CAT, console), tty1 (LINK)
-tools/emu.py -s u go               # run freely, about 0.13x real time
-sctrl --port build/sessions/u/tty1 status
-sctrl --port build/sessions/u/tty1 daemon &   # optional: hold it and serve commands
-tools/emu.py -s u halt             # radio time stops; the LINK waits
-```
-
-The emulated radio runs at about a seventh of real time, so STATUS comes about once a
-second and commands take a few seconds. Its limits (e.g. CW and SSB receive overload its
-CPU model) are in the emulator's `docs/agent_interface.md`.
 
 ## Rules S-CTRL enforces (and agents should expect)
 

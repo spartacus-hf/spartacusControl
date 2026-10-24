@@ -1,5 +1,5 @@
 //! SPECTRUM frames: one waterfall update with its axis (the engine's
-//! `spec_view_t`), and the radio's waterfall palettes (alt2 `ui_waterfall.c`).
+//! `spec_view_t`), and the radio's waterfall palettes.
 
 use serde::Serialize;
 
@@ -119,7 +119,7 @@ impl SpectrumLine {
     }
 }
 
-/// `ui_waterfall.c` palettes[4][16], RGB565: CLASSIC, GRAY, HEAT, OCEAN.
+/// The radio's four waterfall palettes, RGB565: CLASSIC, GRAY, HEAT, OCEAN.
 pub const PALETTES_565: [[u16; 16]; 4] = [
     [
         0x0000, 0x0005, 0x000A, 0x0091, 0x0137, 0x01DE, 0x037E, 0x055C, 0x0673, 0x06C4, 0x5F40, 0xDFC0, 0xFE00, 0xFB80,
@@ -139,7 +139,7 @@ pub const PALETTES_565: [[u16; 16]; 4] = [
     ],
 ];
 
-/// `ui_waterfall.c` / `radio_spectrum.h` geometry: the line's 304 pixels
+/// The radio's waterfall geometry: the line's 304 pixels
 /// start at panel x 8; a history line is 152 bytes; with a spectrum the band
 /// also holds its trace (int16), peak and the raster's trace rows.
 pub const SPEC_X0: usize = 8;
@@ -154,7 +154,7 @@ const C_PEAK: u16 = 0xFD20;
 const C_DIAL: u16 = 0xF800;
 
 /// How the radio splits its band between the spectrum and the history
-/// (`ui_waterfall.c` `layout()`): the spectrum on top (all of the band in
+/// (as its own layout does): the spectrum on top (all of the band in
 /// the SPECTRUM layout, 3/8 of it in SPLIT), then the history at the
 /// shortest line height (2..8 rows) whose ring still fits the band's memory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

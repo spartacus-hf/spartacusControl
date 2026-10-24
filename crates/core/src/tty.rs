@@ -1,5 +1,5 @@
 //! A USB CDC serial port opened raw: no line discipline, no echo, no CR/LF
-//! translation, non-blocking (as alt2's rev1_diag.py opens the console).
+//! translation, non-blocking.
 
 use std::os::fd::{AsFd, AsRawFd, OwnedFd};
 use std::path::Path;
@@ -76,7 +76,7 @@ impl Tty {
     /// its CAT PTT) ends before this one starts.
     ///
     /// A pseudo-terminal has no DTR (the ioctl fails with ENOTTY): its far
-    /// end, such as the cortexM4 emulator, raises DTR while the tty is open,
+    /// end, such as an emulator, raises DTR while the tty is open,
     /// and the previous program's close already ended its session.
     pub async fn fresh_session(&self) -> Result<()> {
         if self.pty {

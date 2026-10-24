@@ -4,7 +4,7 @@
 //! both ask it before anything that changes the radio; the radio's own
 //! guards (firmware ACK codes, its TX guard) still hold behind it.
 //!
-//! Rules (docs/plan, C3):
+//! Rules:
 //! - R2 nothing that changes frequency, mode, band, audio-path settings,
 //!   storage or the USB personality while the radio transmits;
 //! - R3 a CAT program (WSJT-X ...) active on the other port locks
