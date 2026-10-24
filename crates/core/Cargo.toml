@@ -3,6 +3,11 @@ name = "sctrl-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "S-CTRL's engine: radio discovery, LINK session, safety arbiter, TX controller, PipeWire"
 
 [lints]
 workspace = true

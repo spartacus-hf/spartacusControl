@@ -153,3 +153,12 @@ transmitter's audio input.
 | `scripts/install.sh` | The release for this user: binary, desktop entry, icon (`--uninstall`). |
 | `packaging` | The desktop entry and the icon (SVG; the PNG is the window's own). |
 | `tests/fixtures` | LINK test vectors shared with the firmware. |
+| `LICENSE` | The GNU General Public License, version 3. |
+
+## License
+
+GNU General Public License v3.0 or later — see `LICENSE`. Copyright (c) 2026 Cem ASLAN.
+
+S-CTRL keys a transmitter. Transmitting needs an amateur radio licence, and what goes on air
+is the operator's responsibility. The TX safeguards are there to help, not a guarantee: like
+the rest of S-CTRL, they come without any warranty (sections 15 and 16 of the license).

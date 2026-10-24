@@ -5,9 +5,11 @@ members = ["crates/proto", "crates/core", "crates/sctrl"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-license = "LicenseRef-Proprietary"
+license = "GPL-3.0-or-later"
 repository = "https://github.com/vpcsln/spartacusControl"
-authors = ["caslan"]
+authors = ["Cem ASLAN"]
+rust-version = "1.95"
+publish = false
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

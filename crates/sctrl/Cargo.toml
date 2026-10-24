@@ -3,6 +3,11 @@ name = "sctrl"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "S-CTRL: desktop control for the SPARTACUS REV1 transceiver (window and CLI)"
 
 [lints]
 workspace = true
