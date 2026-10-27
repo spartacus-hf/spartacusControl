@@ -81,6 +81,15 @@ pub fn ipc_handler(
     move |argv: Vec<String>, sink: ipc::Sink| {
         let svc = svc.clone();
         Box::pin(async move {
+            if argv == [ipc::HANDOVER] {
+                return match gui::hand_over(&svc) {
+                    Ok(()) => 0,
+                    Err(why) => {
+                        let _ = sink.send(format!("sctrl: {why}"));
+                        4
+                    }
+                };
+            }
             let full: Vec<String> = std::iter::once("sctrl".to_string()).chain(argv).collect();
             let cli = match Cli::try_parse_from(&full) {
                 Ok(c) => c,

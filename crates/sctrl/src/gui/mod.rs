@@ -10,7 +10,7 @@ mod skin;
 mod txwin;
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock, OnceLock};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, RichText, Sense, Stroke, Vec2, ViewportCommand, X11WindowType};
@@ -53,6 +53,10 @@ pub static ICON: LazyLock<Option<Arc<egui::IconData>>> = LazyLock::new(|| {
 /// The running window's context, for `sctrl show` from another process.
 static WINDOW: OnceLock<egui::Context> = OnceLock::new();
 static SHOW: AtomicBool = AtomicBool::new(false);
+/// Another build was started: the window closes at its next frame.
+static CLOSE: AtomicBool = AtomicBool::new(false);
+/// Another build was started and this window stays: it says why.
+static NOTICE: Mutex<Option<String>> = Mutex::new(None);
 
 /// Bring the window forward, unshaded; false in a daemon (no window).
 pub fn show() -> bool {
@@ -62,14 +66,66 @@ pub fn show() -> bool {
     true
 }
 
+/// A window from another build asks this one to close for it (`sctrl` was
+/// installed again while this one ran). Not while the radio is on the air or
+/// armed, or S-CTRL keys it: this window then comes forward and says so. A
+/// daemon never closes for a window.
+pub fn hand_over(svc: &Service) -> Result<(), String> {
+    let Some(ctx) = WINDOW.get() else {
+        return Err("the running S-CTRL is a daemon, without a window; stop it first".into());
+    };
+    let st = svc.link().and_then(|l| l.state.lock().unwrap().status.clone());
+    let on_air = st
+        .as_ref()
+        .is_some_and(|s| s.transmitting() || s.armed() || s.cat_ptt() || s.memory_busy());
+    if on_air || svc.tx().keying() {
+        *NOTICE.lock().unwrap() =
+            Some("another S-CTRL build was started: it runs once this one is closed off the air".into());
+        SHOW.store(true, Ordering::Relaxed);
+        ctx.request_repaint();
+        return Err("the running S-CTRL stays: the radio is transmitting or armed".into());
+    }
+    CLOSE.store(true, Ordering::Relaxed);
+    ctx.request_repaint();
+    Ok(())
+}
+
+/// Ask the running window of another build to close; Ok once it has, else
+/// what it answered.
+async fn take_over(build: &str) -> Result<(), Vec<String>> {
+    match ipc::ask(vec![ipc::HANDOVER.into()], build).await {
+        Some((0, _)) => {}
+        Some((_, said)) => return Err(said),
+        None => return Ok(()), // gone already
+    }
+    let end = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < end {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        if !ipc::running().await {
+            return Ok(());
+        }
+    }
+    Err(vec!["sctrl: the running S-CTRL did not close within 10 s".into()])
+}
+
 pub fn run(serial: Option<String>, rt: tokio::runtime::Runtime) -> i32 {
     if rt.block_on(ipc::running()) {
-        // Launched again (rofi, a menu): the running window comes forward.
-        if rt.block_on(ipc::forward(vec!["show".into()], env!("SCTRL_BUILD_ID"))) == Some(0) {
+        // Launched again (rofi, a menu): the running window comes forward,
+        // or, from another build, closes for this one.
+        let build = env!("SCTRL_BUILD_ID");
+        if rt
+            .block_on(ipc::ask(vec!["show".into()], build))
+            .is_some_and(|(code, _)| code == 0)
+        {
             return 0;
         }
-        eprintln!("sctrl: an S-CTRL is already running (window or daemon); use it, or stop it first");
-        return 2;
+        if let Err(said) = rt.block_on(take_over(build)) {
+            for l in said {
+                eprintln!("{l}");
+            }
+            eprintln!("sctrl: an S-CTRL is already running (window or daemon); use it, or stop it first");
+            return 2;
+        }
     }
     let _enter = rt.enter();
     let opts = LinkOptions {
@@ -883,6 +939,12 @@ impl eframe::App for App {
             self.toggle_shade = self.shade;
             ctx.send_viewport_cmd(ViewportCommand::Minimized(false));
             ctx.send_viewport_cmd(ViewportCommand::Focus);
+        }
+        if let Some(n) = NOTICE.lock().unwrap().take() {
+            self.act.toast(n, true);
+        }
+        if CLOSE.swap(false, Ordering::Relaxed) {
+            ctx.send_viewport_cmd(ViewportCommand::Close);
         }
     }
 

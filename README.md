@@ -87,7 +87,10 @@ cargo build --release
 To have it in rofi (`-show drun`) and application menus, `scripts/install.sh` builds the
 release and installs it for your user only: `~/.local/bin/sctrl`, a desktop entry in
 `~/.local/share/applications` and its icon. `scripts/install.sh --uninstall` removes them.
-Launching it again while it runs brings the window forward, unshaded (`sctrl show`).
+Working on S-CTRL, `scripts/install.sh --link` links `~/.local/bin/sctrl` to the checkout's
+release build instead, so the menu always starts the last `cargo build --release`.
+Launching it again while it runs brings the window forward, unshaded (`sctrl show`). A
+window of an older build closes for the new one, unless the radio is transmitting or armed.
 
 Settings live in `~/.config/sctrl/config.json` (PC speaker, TX limits, window, CW memories);
 the TX audit log in `~/.local/state/sctrl/tx.log`.
@@ -210,7 +213,7 @@ transmitter's audio input.
 | `crates/sctrl` | The `sctrl` binary: the window (no arguments), `sctrl daemon`, CLI commands. |
 | `docs/link-protocol.md` | The USB LINK protocol, identical to the firmware's copy. |
 | `scripts/check.sh` | fmt, clippy and tests: run before committing. |
-| `scripts/install.sh` | The release for this user: binary, desktop entry, icon (`--uninstall`). |
+| `scripts/install.sh` | The release for this user: binary, desktop entry, icon (`--link`, `--uninstall`). |
 | `packaging` | The desktop entry and the icon (SVG; the PNG is the window's own). |
 | `tests/fixtures` | LINK test vectors shared with the firmware. |
 | `CONTRIBUTING.md` | How to work on S-CTRL: checks, commits, radio safety. |

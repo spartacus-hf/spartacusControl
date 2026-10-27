@@ -33,6 +33,10 @@ pub enum Reply {
     Exit { exit: i32 },
 }
 
+/// A window from another build (a newer one, just installed) asks the
+/// running window to close for it: the one request every build serves.
+pub const HANDOVER: &str = "--hand-over";
+
 pub fn socket_path() -> PathBuf {
     let base = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
@@ -64,6 +68,27 @@ pub async fn running() -> bool {
 
 /// Run `argv` in the serving S-CTRL, printing its output; None when none runs.
 pub async fn forward(argv: Vec<String>, build: &str) -> Option<i32> {
+    request(argv, build, |out| {
+        use std::io::Write;
+        // The reader went away (`sctrl ... | head`): stop quietly.
+        writeln!(std::io::stdout(), "{out}").is_ok()
+    })
+    .await
+}
+
+/// Like [`forward`], the output kept instead of printed.
+pub async fn ask(argv: Vec<String>, build: &str) -> Option<(i32, Vec<String>)> {
+    let mut lines = Vec::new();
+    let code = request(argv, build, |out| {
+        lines.push(out);
+        true
+    })
+    .await?;
+    Some((code, lines))
+}
+
+/// One request; `out` takes each output line, false to stop reading (exit 0).
+async fn request(argv: Vec<String>, build: &str, mut out: impl FnMut(String) -> bool) -> Option<i32> {
     let stream = UnixStream::connect(socket_path()).await.ok()?;
     let (r, mut w) = stream.into_split();
     let mut req = serde_json::to_vec(&Request {
@@ -76,10 +101,8 @@ pub async fn forward(argv: Vec<String>, build: &str) -> Option<i32> {
     let mut lines = BufReader::new(r).lines();
     while let Ok(Some(l)) = lines.next_line().await {
         match serde_json::from_str::<Reply>(&l) {
-            Ok(Reply::Out { out }) => {
-                use std::io::Write;
-                // The reader went away (`sctrl ... | head`): stop quietly.
-                if writeln!(std::io::stdout(), "{out}").is_err() {
+            Ok(Reply::Out { out: line }) => {
+                if !out(line) {
                     return Some(0);
                 }
             }
@@ -94,7 +117,7 @@ pub async fn forward(argv: Vec<String>, build: &str) -> Option<i32> {
 pub type Sink = mpsc::UnboundedSender<String>;
 
 /// Serve until the process ends. `handle(argv, sink)` runs one request;
-/// requests from another build of S-CTRL are refused.
+/// requests from another build of S-CTRL are refused, but for [`HANDOVER`].
 pub async fn serve<F, Fut>(build: &'static str, handle: F) -> Result<()>
 where
     F: Fn(Vec<String>, Sink) -> Fut + Send + Sync + Clone + 'static,
@@ -122,7 +145,7 @@ where
             let Ok(req) = serde_json::from_str::<Request>(&line) else {
                 return;
             };
-            if req.build != build {
+            if req.build != build && req.argv != [HANDOVER] {
                 let msg = format!(
                     "sctrl: the running S-CTRL (pid {}) is another build than this sctrl; restart it",
                     std::process::id()

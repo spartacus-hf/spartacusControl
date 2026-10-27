@@ -694,6 +694,11 @@ impl TxController {
         r
     }
 
+    /// Is S-CTRL keying the radio now (a key-down, a tune, a memory)?
+    pub fn keying(&self) -> bool {
+        self.inner.lock().unwrap().busy
+    }
+
     fn take_busy(&self) -> Result<BusyGuard> {
         let mut i = self.inner.lock().unwrap();
         if i.busy {
