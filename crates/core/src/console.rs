@@ -91,7 +91,8 @@ pub async fn leave_diag(dev: &UsbDevice) -> Result<()> {
     let mut c = TextConsole::open(&port).await?;
     let id = c.cmd("id", Duration::from_secs(3)).await?;
     let state = id.iter().find_map(|l| l.strip_prefix("state=")).unwrap_or("unknown");
-    if !matches!(state, "RECEIVE" | "PROTECTION") {
+    // "RECEIVE (IF NEAR DC)" receives too: a dial on the clock's own grid.
+    if !(state.starts_with("RECEIVE") || state == "PROTECTION") {
         bail!("the radio is in {state}; wait for receive");
     }
     let _ = c.cmd("exit", Duration::from_secs(1)).await; // the port goes away with the reply
