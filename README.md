@@ -219,9 +219,21 @@ transmitter's audio input.
 | `CONTRIBUTING.md` | How to work on S-CTRL: checks, commits, radio safety. |
 | `LICENSE` | The GNU General Public License, version 3. |
 
+## Related repositories
+
+- [spartacus-hf/spartacusALT4](https://github.com/spartacus-hf/spartacusALT4): the radio's firmware
+  (GPL-3.0-or-later).
+- [spartacus-hf/spartacus_PCB_REV1](https://github.com/spartacus-hf/spartacus_PCB_REV1): the REV1
+  board's KiCad design (CERN-OHL-S-2.0). The board as built is tag `rev1.0`.
+
 ## License
 
 GNU General Public License v3.0 or later — see `LICENSE`. Copyright (c) 2026 Cem ASLAN.
+
+The names "S-CTRL" and "SPARTACUS-HF" and their logos, including the icon in `packaging/`
+(`sctrl.svg`, `sctrl.png`), identify the project and are not licensed under the GPL. Factual
+use, such as saying that a fork is based on S-CTRL, needs no permission. A modified build must
+not be presented as an official S-CTRL release.
 
 S-CTRL keys a transmitter. Transmitting needs an amateur radio licence, and what goes on air
 is the operator's responsibility. The TX safeguards are there to help, not a guarantee: like
